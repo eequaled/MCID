@@ -170,6 +170,7 @@ describe('AdminMembersService', () => {
         'test',
         ['s1', 's2'],
         ['r1', 'r2'],
+        undefined,
       );
       expect(repository.findMembersPaginated).toHaveBeenCalledWith(
         'all',
@@ -178,6 +179,7 @@ describe('AdminMembersService', () => {
         0,
         ['s1', 's2'],
         ['r1', 'r2'],
+        undefined,
       );
       expect(result.data).toHaveLength(1);
     });

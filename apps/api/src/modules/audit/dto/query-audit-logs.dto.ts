@@ -18,6 +18,7 @@ const ACTION_TYPES = [
   'webhook',
   'member',
   'sync',
+  'access',
   'permission',
 ] as const;
 

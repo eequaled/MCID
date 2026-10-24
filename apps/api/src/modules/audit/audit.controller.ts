@@ -67,6 +67,7 @@ export class AuditController {
       'webhook',
       'member',
       'sync',
+      'access',
       'permission',
     ],
   })

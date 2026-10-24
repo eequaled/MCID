@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, ilike, inArray, or, sql, SQL } from 'drizzle-orm';
+import { and, eq, gte, ilike, inArray, or, sql, SQL } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DRIZZLE } from '../../database/database.module';
 import * as schema from '../../database/entities';
@@ -144,12 +144,14 @@ export class AdminMembersRepository {
     search?: string,
     serverId?: string[],
     roleId?: string[],
+    joinedAfter?: string,
   ): Promise<number> {
     const conditions = this.buildMemberConditions(
       filter,
       search,
       serverId,
       roleId,
+      joinedAfter,
     );
 
     const [{ count }] = await this.db
@@ -170,12 +172,14 @@ export class AdminMembersRepository {
     offset: number,
     serverId?: string[],
     roleId?: string[],
+    joinedAfter?: string,
   ): Promise<RawMemberListRow[]> {
     const conditions = this.buildMemberConditions(
       filter,
       search,
       serverId,
       roleId,
+      joinedAfter,
     );
 
     return this.db
@@ -244,6 +248,7 @@ export class AdminMembersRepository {
     search?: string,
     serverId?: string[],
     roleId?: string[],
+    joinedAfter?: string,
   ): SQL[] {
     const conditions: SQL[] = [];
 
@@ -262,6 +267,14 @@ export class AdminMembersRepository {
         .from(schema.serverMembers);
 
       conditions.push(inArray(schema.members.id, allMemberIdsInServers));
+    }
+
+    if (joinedAfter) {
+      const joinedAfterSubquery = this.db
+        .selectDistinct({ memberId: schema.serverMembers.memberId })
+        .from(schema.serverMembers)
+        .where(gte(schema.serverMembers.joinedAt, new Date(joinedAfter)));
+      conditions.push(inArray(schema.members.id, joinedAfterSubquery));
     }
 
     if (search) {

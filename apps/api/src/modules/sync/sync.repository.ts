@@ -6,7 +6,7 @@ import { serverSyncLogs } from '../../database/entities/server-sync-log.entity';
 import { syncChangeDetails } from '../../database/entities/sync-change-detail.entity';
 import { eq, and, desc, sql, asc, isNull, lt, or } from 'drizzle-orm';
 import { SyncTarget } from './dto/trigger-sync.dto';
-import type { SyncLogStatus, SyncType } from '@mcid/contracts';
+import type { SyncChangeAction, SyncLogStatus, SyncType } from '@mcid/contracts';
 
 export type { SyncLogStatus };
 
@@ -235,21 +235,39 @@ export class SyncRepository {
     syncLogId: number,
     limit = 100,
     offset = 0,
+    action?: SyncChangeAction,
   ): Promise<(typeof syncChangeDetails.$inferSelect)[]> {
+    const conditions = action
+      ? and(
+          eq(syncChangeDetails.syncLogId, syncLogId),
+          eq(syncChangeDetails.action, action),
+        )
+      : eq(syncChangeDetails.syncLogId, syncLogId);
+
     return this.db
       .select()
       .from(syncChangeDetails)
-      .where(eq(syncChangeDetails.syncLogId, syncLogId))
+      .where(conditions)
       .orderBy(desc(syncChangeDetails.id))
       .limit(limit)
       .offset(offset);
   }
 
-  async countChangeDetails(syncLogId: number): Promise<number> {
+  async countChangeDetails(
+    syncLogId: number,
+    action?: SyncChangeAction,
+  ): Promise<number> {
+    const conditions = action
+      ? and(
+          eq(syncChangeDetails.syncLogId, syncLogId),
+          eq(syncChangeDetails.action, action),
+        )
+      : eq(syncChangeDetails.syncLogId, syncLogId);
+
     const [result] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(syncChangeDetails)
-      .where(eq(syncChangeDetails.syncLogId, syncLogId));
+      .where(conditions);
     return result?.count ?? 0;
   }
 }

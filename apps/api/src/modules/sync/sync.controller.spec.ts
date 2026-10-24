@@ -104,6 +104,7 @@ describe('SyncController', () => {
       42,
       50,
       10,
+      undefined,
     );
   });
 

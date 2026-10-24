@@ -100,7 +100,7 @@ export class AdminAccessGrantsService {
     const after = this.toMap(rows);
     this.audit.logAction({
       actorId,
-      actionType: 'permission',
+      actionType: 'access',
       action: 'role_grants_updated',
       entityType: 'role',
       entityId: roleId,
@@ -139,7 +139,7 @@ export class AdminAccessGrantsService {
     const after = this.toMap(parsed);
     this.audit.logAction({
       actorId,
-      actionType: 'permission',
+      actionType: 'access',
       action: 'member_overrides_updated',
       entityType: 'member',
       entityId: memberId,
@@ -175,7 +175,7 @@ export class AdminAccessGrantsService {
 
     this.audit.logAction({
       actorId,
-      actionType: 'permission',
+      actionType: 'access',
       action: 'member_override_removed',
       entityType: 'member',
       entityId: memberId,

@@ -103,6 +103,7 @@ export class AdminMembersService {
       search,
       serverId,
       roleId,
+      joinedAfter,
     } = query;
     const offset = (page - 1) * limit;
 
@@ -112,6 +113,7 @@ export class AdminMembersService {
       search,
       serverId,
       roleId,
+      joinedAfter,
     );
 
     // Fetch the page of members
@@ -122,6 +124,7 @@ export class AdminMembersService {
       offset,
       serverId,
       roleId,
+      joinedAfter,
     );
 
     if (memberRows.length === 0) {

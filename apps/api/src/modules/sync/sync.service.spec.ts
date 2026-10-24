@@ -245,6 +245,7 @@ describe('SyncService', () => {
         1,
         100,
         0,
+        undefined,
       );
     });
   });

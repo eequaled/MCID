@@ -14,7 +14,7 @@ import { MemberSyncService } from './services/member-sync.service';
 import { RoleSyncService } from './services/role-sync.service';
 import { ServerSyncService } from './services/server-sync.service';
 import { SyncLogService } from './services/sync-log.service';
-import type { SyncType } from '@mcid/contracts';
+import type { SyncChangeAction, SyncType } from '@mcid/contracts';
 import { SyncChangeEntry } from './sync-types';
 import { SyncTarget } from './dto/trigger-sync.dto';
 import { SyncStatusDto } from './dto/sync-status.dto';
@@ -343,8 +343,14 @@ export class SyncService implements OnApplicationBootstrap, OnModuleDestroy {
     syncLogId: number,
     limit = 100,
     offset = 0,
+    action?: SyncChangeAction,
   ): Promise<SyncChangeDetailsResponseDto> {
-    return this.syncLogService.getSyncChangeDetails(syncLogId, limit, offset);
+    return this.syncLogService.getSyncChangeDetails(
+      syncLogId,
+      limit,
+      offset,
+      action,
+    );
   }
 
   async drainQueuedSyncs(): Promise<void> {

@@ -31,6 +31,7 @@ import { SyncService } from './sync.service';
 import { TriggerSyncDto } from './dto/trigger-sync.dto';
 import { SyncStatusDto } from './dto/sync-status.dto';
 import { SyncLogsQueryDto } from './dto/sync-logs-query.dto';
+import { SYNC_CHANGE_ACTIONS, type SyncChangeAction } from '@mcid/contracts';
 import { SyncLogsResponseDto } from './dto/sync-log.dto';
 import { SyncChangeDetailsResponseDto } from './dto/sync-change-detail.dto';
 import { AdminAccessGuard } from '../../common/guards/admin-access.guard';
@@ -147,6 +148,12 @@ export class SyncController {
   })
   @ApiQuery({ name: 'limit', required: false, type: Number, example: 20 })
   @ApiQuery({ name: 'offset', required: false, type: Number, example: 0 })
+  @ApiQuery({
+    name: 'action',
+    required: false,
+    enum: SYNC_CHANGE_ACTIONS,
+    description: 'Filter changes by what happened (added, removed, updated, ...)',
+  })
   @ApiOkResponse({
     description: 'Sync logs retrieved successfully.',
     type: SyncLogsResponseDto,
@@ -177,6 +184,12 @@ export class SyncController {
   @ApiParam({ name: 'syncLogId', type: Number, example: 42 })
   @ApiQuery({ name: 'limit', required: false, type: Number, example: 100 })
   @ApiQuery({ name: 'offset', required: false, type: Number, example: 0 })
+  @ApiQuery({
+    name: 'action',
+    required: false,
+    enum: SYNC_CHANGE_ACTIONS,
+    description: 'Filter changes by what happened (added, removed, updated, ...)',
+  })
   @ApiOkResponse({
     description: 'Sync change details retrieved successfully.',
     type: SyncChangeDetailsResponseDto,
@@ -191,7 +204,8 @@ export class SyncController {
     @Param('syncLogId', ParseIntPipe) syncLogId: number,
     @Query('limit', new DefaultValuePipe(100), ParseIntPipe) limit: number,
     @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
+    @Query('action') action?: SyncChangeAction,
   ): Promise<SyncChangeDetailsResponseDto> {
-    return this.syncService.getSyncChangeDetails(syncLogId, limit, offset);
+    return this.syncService.getSyncChangeDetails(syncLogId, limit, offset, action);
   }
 }
