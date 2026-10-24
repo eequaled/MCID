@@ -1,0 +1,50 @@
+---
+title: 'mcid-cli'
+description: 'Run the whole MCID MVP from the terminal: admin access, projects, servers, members, sync, audits and inbound webhooks.'
+---
+
+`mcid-cli` is the command-line client for MCID. It signs in as a system admin with
+Discord, remembers one encrypted session per profile, and covers the admin surface:
+projects and API keys, servers and channels, members, roles and admin access, sync,
+audits and settings, and the inbound webhook lifecycle including signed test
+submissions.
+
+## Install and first login
+
+```bash
+npm install -g mcid-cli            # or: pnpm add -g mcid-cli
+mcid-cli login --profile prod --base-url https://mcid.example.com
+```
+
+`login` opens Discord in your browser and stores the session encrypted in the OS
+keychain (a key file next to the config is the fallback). Profiles let you hold
+several deployments at once:
+
+```bash
+mcid-cli whoami --profile prod     # who is signed in
+mcid-cli profile list              # what exists
+mcid-cli doctor --profile prod     # config, keychain, API, session
+```
+
+## How commands behave
+
+- **Every state-changing command takes `--profile` explicitly.** There is no silent
+  fallback to an active profile for writes; reads fall back to the active profile.
+- **Destructive commands confirm first.** Type the resource name to proceed, or pass
+  `--yes`. An aborted confirmation exits non-zero (code 2), so scripts never treat a
+  cancel as success.
+- **Output formats are uniform.** List commands accept `--json`, `-o csv` and `-q`
+  (ids only) where marked. Errors print one line to stderr and the process exits with
+  the code the command documents (`2` rejected, `3` auth, `4` not found, `5`
+  unexpected, `64` usage).
+
+## Where to go next
+
+- The command reference with examples per group: [mcid-cli commands](/docs/cli/reference)
+- Inbound webhook sending from the CLI: [mcid-cli webhooks](/docs/cli/webhooks)
+
+<Callout type="note">
+  Exit code `0` always means the command completed, including commands whose answer is
+  negative (a permission that came back denied). Non-zero means the command itself did
+  not complete.
+</Callout>

@@ -1,0 +1,66 @@
+---
+title: 'mcid-cli webhooks'
+description: 'Create inbound webhooks from a schema file, manage reader roles, list submissions and send signed test payloads from the terminal.'
+---
+
+The CLI covers the whole inbound webhook lifecycle for admins: creation from a schema
+file with the signing secret stored locally, updates and rotation, submission
+inspection and export, and signed test sends against your own deployment.
+
+## Create, update, rotate
+
+```bash
+mcid-cli webhook create ./schema.json \
+  --name "Contact form" --roles 123456789012345678 \
+  --accept-origin https://portal.example.com --profile prod
+mcid-cli webhook list
+mcid-cli webhook get contact-form
+mcid-cli webhook roles set contact-form --roles 987654321098765432
+mcid-cli webhook rotate-secret contact-form
+```
+
+`create` stores the signing secret encrypted on the profile so `webhook send` can sign
+later without anyone pasting secrets around. The secret is printed in plain text only
+with `--reveal`.
+
+## Submissions
+
+```bash
+mcid-cli webhook submissions contact-form --since 24h
+mcid-cli webhook submissions export contact-form --file subs.csv
+mcid-cli webhook submission contact-form <submission-id>
+mcid-cli webhook docs contact-form
+```
+
+`submissions export` is a real nested command — `webhook submissions export X`
+exports webhook X, it does not list a webhook named "export". Exports are written with
+owner-only file permissions and refuse to overwrite an existing `--file` without
+`--force`.
+
+## Send signed test payloads
+
+```bash
+# A payload generated from the webhook's schema (steps[].fields aware)
+mcid-cli webhook send contact-form --example --print-curl
+
+# Your own payload
+mcid-cli webhook send contact-form --data ./payload.json \
+  --api-key pk_xxxxxxxx.your-secret-here
+```
+
+What `send` does for you:
+
+- Builds `--example` payloads from the schema's `steps[].fields`, picking the first
+  enum option **value** (the `{ value, label }` object would be rejected).
+- Validates your `--data` payload against the schema locally first — missing required
+  fields or wrong enum values fail before anything is signed or sent.
+- Signs `timestamp.rawBody` with HMAC-SHA256 using the locally stored secret.
+- `--print-curl` prints the command with `<MCID_API_KEY>` as a placeholder unless you
+  pass `--reveal`; the printed signature stays a placeholder — signatures expire
+  after five minutes and work once, so a pre-signed curl would be dead on arrival.
+
+<Callout type="note">
+  Exit code 2 with a body in the output means the ingest endpoint rejected the
+  submission (bad signature, replayed timestamp, schema violation). The rejection
+  reason is in the JSON that follows.
+</Callout>

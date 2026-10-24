@@ -1,0 +1,121 @@
+---
+title: 'mcid-cli commands'
+description: 'The command reference: every mcid-cli group with the flags that matter and an example per command.'
+---
+
+This is the working reference for `mcid-cli 1.0`. Run any command with `--help` for the
+full flag list. Grammar notes: some groups have real nested subcommands
+(`webhook submissions export`, `access role set`, `dev token refresh`), and most list
+commands accept `--json`, `-o csv` and `-q`.
+
+## Projects and keys
+
+```bash
+mcid-cli project create --name Portal --redirect-uri http://localhost:3000/callback
+mcid-cli project list
+mcid-cli project get Portal
+mcid-cli project access grant Portal "Micro Club" --scope read_members --operation READ SEND_MESSAGES
+mcid-cli project access list Portal
+mcid-cli project key show Portal      # status + prefix, never the full key
+mcid-cli project key rotate Portal    # shown once, like create
+```
+
+Notes:
+
+- `project create --json` always includes the full API key. The key is shown once and
+  cannot be retrieved again, so the CLI never masks it in the create output.
+- `project access grant` re-sends the full grant. With `--operation` omitted it keeps
+  the server's existing operations; with `--operation` it replaces them with exactly
+  the operations you list (unlisted operations are turned off, including `READ`).
+  Scopes and operations are validated against the shared contract before any request.
+
+## Servers and channels
+
+```bash
+mcid-cli server list
+mcid-cli server add 123456789012345678          # refuses an id that is already registered
+mcid-cli server update 123456789012345678 --name "Competition"
+mcid-cli server channels "Micro Club"
+mcid-cli server channel "Micro Club" 444444444444444444 --messages 50
+```
+
+`server add` omits the name unless you pass `--name`, so the API fills the real guild
+name from the bot cache. Re-running `add` on a known id is refused — use `server
+update`, because the create endpoint resets type, sync cadence and enabled state.
+
+## Members
+
+```bash
+mcid-cli member list --server "Micro Club" --limit 100 --all
+mcid-cli member list --joined-after 2026-03-01T00:00:00Z
+mcid-cli member get @john_doe
+mcid-cli member export --server "Micro Club" -o csv --file members.csv
+```
+
+`member list` sends `page`/`limit` itself (default limit 100) and `--all` walks every
+page, so you never silently see only the first 20 rows.
+
+## Roles and admin access
+
+```bash
+mcid-cli role list --server "Micro Club"
+mcid-cli access catalog
+mcid-cli access explain @john_doe
+mcid-cli access role set Admin webhooks=write --yes
+mcid-cli access member set @john_doe members=read servers=write --yes
+mcid-cli access member unset @john_doe servers --yes
+mcid-cli access overrides
+```
+
+`access role set` merges with the role's current grants unless `--replace` is passed.
+
+## Sync
+
+```bash
+mcid-cli sync trigger "Micro Club"
+mcid-cli sync status
+mcid-cli sync logs --server "Micro Club"
+mcid-cli sync changes 42 --type added
+```
+
+`sync changes` pages through the run's changes until it has read all of them, and
+`--type` maps to the API's `action` filter.
+
+## Ops: status, monitoring, audits, settings
+
+```bash
+mcid-cli status                       # redis down is a warning, db down is a failure
+mcid-cli monitor usage --period 30d
+mcid-cli monitor auth-failures --since 24h
+mcid-cli audit list --action permission --since 7d
+mcid-cli audit export --file audit.csv
+mcid-cli settings get
+mcid-cli settings set cache.permissionTtlMs=60000 --yes
+mcid-cli settings reset --yes         # resets ALL overrides; the API has no per-key reset
+```
+
+Durations like `24h`, `7d`, `30m` are converted to ISO timestamps before they are
+sent. `--action` filters the audit category (`auth`, `project`, `server`, `role`,
+`webhook`, `member`, `sync`, `permission`, `access`).
+
+## Inbound webhooks
+
+See [mcid-cli webhooks](/docs/cli/webhooks) for the full lifecycle: creating from a
+schema file, stored signing secrets, submissions, and signed test sends.
+
+## Developer tools
+
+```bash
+mcid-cli dev sso --project Portal --port 3210
+mcid-cli dev token validate <token> --api-key pk_...
+mcid-cli dev token refresh <refresh-token> --token <session-token>
+mcid-cli dev check @john_doe members.read --server "Micro Club"
+mcid-cli dev env --project Portal --file .env     # written with owner-only permissions
+```
+
+`dev token refresh` prints the new token pair in full: the old pair is invalidated
+server-side the moment the refresh succeeds, so masking the only surviving
+credentials would lose the session.
+
+The `dev sso` callback listener binds `127.0.0.1` only and times out if no callback
+arrives (`--timeout <seconds>`, default 300).

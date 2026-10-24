@@ -1,5 +1,12 @@
 {
   "title": "MCID docs",
   "description": "How MCID works, how to use it from your project, and how to work on it.",
-  "pages": ["index", "start-here", "build", "integrate", "api-reference"]
+  "pages": [
+    "index",
+    "start-here",
+    "build",
+    "integrate",
+    "cli",
+    "api-reference"
+  ]
 }
