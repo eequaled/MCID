@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { Command } from 'commander';
 import { configPath, loadConfig, resolveProfileName } from '../config.js';
 import { defaultKeyProvider, decrypt, webhookSecretContext } from '../crypto-store.js';
@@ -15,6 +16,8 @@ import {
   toCsv,
 } from '../lib/output.js';
 import { resolveWebhook } from '../lib/resolver.js';
+import { parseSince } from '../lib/time.js';
+import { buildExamplePayload, validatePayloadAgainstSchema } from '../lib/example-payload.js';
 import { colors } from '../lib/tui.js';
 import { resolveSession } from '../session.js';
 import {
@@ -178,6 +181,7 @@ export function registerWebhookCommand(program: Command): void {
     .option('--data <file>', 'Payload JSON file or "-" for stdin')
     .option('--example', 'Generate a valid sample payload from the webhook schema')
     .option('--print-curl', 'Print equivalent signed curl command without sending')
+    .option('--reveal', 'With --print-curl: print the real API key instead of a placeholder')
     .option('--api-key <key>', 'project API key for the ingest endpoint (or MCID_API_KEY)')
     .option('--origin <origin>', "Origin header (defaults to the webhook's first accepted origin)")
     .option('--profile <name>', 'Profile to use')
@@ -188,6 +192,7 @@ export function registerWebhookCommand(program: Command): void {
           data?: string;
           example?: boolean;
           printCurl?: boolean;
+          reveal?: boolean;
           apiKey?: string;
           origin?: string;
           profile?: string;
@@ -210,7 +215,7 @@ export function registerWebhookCommand(program: Command): void {
 
           let rawPayload = '';
           if (options.example) {
-            rawPayload = JSON.stringify(generateExamplePayload(webhookDetail.schema), null, 2);
+            rawPayload = JSON.stringify(buildExamplePayload(webhookDetail.schema), null, 2);
           } else if (options.data === '-') {
             rawPayload = await readStdin();
           } else if (options.data) {
@@ -222,10 +227,20 @@ export function registerWebhookCommand(program: Command): void {
             );
           }
 
+          let payload: unknown;
           try {
-            JSON.parse(rawPayload);
+            payload = JSON.parse(rawPayload);
           } catch {
             throw new CliError('Payload is not valid JSON', ExitCode.PrecheckFailed);
+          }
+          // Fail before signing and sending when the payload cannot satisfy
+          // the schema; the server stays authoritative, this is early feedback.
+          const schemaProblems = validatePayloadAgainstSchema(payload, webhookDetail.schema);
+          if (schemaProblems.length > 0) {
+            throw new CliError(
+              `Payload does not match the webhook schema:\n  ${schemaProblems.join('\n  ')}`,
+              ExitCode.PrecheckFailed,
+            );
           }
 
           // Sign payload
@@ -239,10 +254,12 @@ export function registerWebhookCommand(program: Command): void {
           const origin = options.origin ?? webhookDetail.acceptedOrigins?.[0];
 
           if (options.printCurl) {
+            // The printed command must not leak the API key unless --reveal.
+            const printedKey = options.reveal && apiKey ? apiKey : '<MCID_API_KEY>';
             process.stdout.write(
               `curl -X POST "${submitUrl}" \\\n` +
                 `  -H "Content-Type: application/json" \\\n` +
-                `  -H "Authorization: Bearer ${apiKey ?? '<MCID_API_KEY>'}" \\\n` +
+                `  -H "Authorization: Bearer ${printedKey}" \\\n` +
                 (origin ? `  -H "Origin: ${origin}" \\\n` : '') +
                 '  -H "X-MCID-Signature: t=<UNIX_TIMESTAMP>,v1=<HMAC_SHA256>" \\\n' +
                 `  -d '${rawPayload.replace(/'/g, "'\\''")}'\n`,
@@ -294,93 +311,101 @@ export function registerWebhookCommand(program: Command): void {
       },
     );
 
-  // webhook submissions <webhook> [--since <date>] [--until <date>] [--limit <n>] [--columns <cols>]
-  webhook
-    .command('submissions <webhook>')
+  // webhook submissions [list] <webhook> — real nested subcommands, so
+  // `webhook submissions export X` exports instead of "list webhook named export".
+  const submissionsCmd = webhook
+    .command('submissions')
+    .description('Submissions received by an inbound webhook');
+  const submissionsListOptions = (cmd: Command) =>
+    cmd
+      .option('--since <date>', 'Filter submissions since (ISO timestamp or 30m, 24h, 7d)')
+      .option('--until <date>', 'Filter submissions until (ISO timestamp or 30m, 24h, 7d)')
+      .option('--limit <n>', 'Maximum submissions to return (default 30)', '30')
+      .option('--columns <cols>', 'Comma-separated columns to display')
+      .option('--profile <name>', 'Profile to use')
+      .option('--json', 'Output as JSON')
+      .option('-o, --output <format>', 'Output format (table|json|csv)', 'table');
+  const listSubmissionsAction = async (
+    webhookArg: string,
+    options: {
+      since?: string;
+      until?: string;
+      limit: string;
+      columns?: string;
+      profile?: string;
+      json?: boolean;
+      output?: 'table' | 'json' | 'csv';
+    },
+  ): Promise<void> => {
+    try {
+      const client = await getClient(options.profile);
+      const resolved = await resolveWebhook(client, webhookArg);
+
+      const params = new URLSearchParams({ limit: options.limit });
+      if (options.since) params.set('dateFrom', parseSince(options.since, '--since'));
+      if (options.until) params.set('dateTo', parseSince(options.until, '--until'));
+
+      const raw = await client.get(
+        `/inbound-webhooks/${resolved.id}/submissions?${params.toString()}`,
+      );
+      const flattened = unwrapArray<Record<string, unknown>>(raw, ['submissions', 'data']).map(
+        flattenSubmission,
+      );
+
+      const outFormat = options.json ? 'json' : options.output || 'table';
+      if (outFormat === 'json') {
+        printJson(flattened);
+        return;
+      }
+      if (outFormat === 'csv') {
+        const cols = options.columns ? options.columns.split(',') : undefined;
+        process.stdout.write(toCsv(flattened, cols));
+        return;
+      }
+
+      if (flattened.length === 0) {
+        process.stdout.write(colors.dim('No submissions found.\n'));
+        return;
+      }
+
+      const cols = options.columns
+        ? options.columns.split(',').map((c) => ({ header: c.toUpperCase(), key: c }))
+        : [
+            { header: 'ID', key: 'id', format: (v: unknown) => colors.dim(String(v)) },
+            {
+              header: 'RECEIVED',
+              key: 'receivedAt',
+              format: (v: unknown) => formatAge(typeof v === 'string' ? v : undefined),
+            },
+            {
+              header: 'DATA SUMMARY',
+              format: (_: unknown, r: Record<string, unknown>) => {
+                const entries = Object.entries(r).filter(([k]) => k !== 'id' && k !== 'receivedAt');
+                return entries
+                  .slice(0, 3)
+                  .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+                  .join(' ');
+              },
+            },
+          ];
+
+      printTable({
+        columns: cols,
+        data: flattened,
+      });
+    } catch (err) {
+      exitWithError('webhook submissions', err);
+    }
+  };
+
+  submissionsListOptions(submissionsCmd.command('list <webhook>').alias('ls'))
     .description('List submissions received by an inbound webhook')
-    .option('--since <date>', 'Filter submissions since date')
-    .option('--until <date>', 'Filter submissions until date')
-    .option('--limit <n>', 'Maximum submissions to return (default 30)', '30')
-    .option('--columns <cols>', 'Comma-separated columns to display')
-    .option('--profile <name>', 'Profile to use')
-    .option('--json', 'Output as JSON')
-    .option('-o, --output <format>', 'Output format (table|json|csv)', 'table')
-    .action(
-      async (
-        webhookArg: string,
-        options: {
-          since?: string;
-          until?: string;
-          limit: string;
-          columns?: string;
-          profile?: string;
-          json?: boolean;
-          output?: 'table' | 'json' | 'csv';
-        },
-      ) => {
-        try {
-          const client = await getClient(options.profile);
-          const resolved = await resolveWebhook(client, webhookArg);
+    .action(listSubmissionsAction);
 
-          const params = new URLSearchParams({ limit: options.limit });
-          if (options.since) params.set('dateFrom', options.since);
-          if (options.until) params.set('dateTo', options.until);
-
-          const raw = await client.get(
-            `/inbound-webhooks/${resolved.id}/submissions?${params.toString()}`,
-          );
-          const flattened = unwrapArray<Record<string, unknown>>(raw, ['submissions', 'data']).map(
-            flattenSubmission,
-          );
-
-          const outFormat = options.json ? 'json' : options.output || 'table';
-          if (outFormat === 'json') {
-            printJson(flattened);
-            return;
-          }
-          if (outFormat === 'csv') {
-            const cols = options.columns ? options.columns.split(',') : undefined;
-            process.stdout.write(toCsv(flattened, cols));
-            return;
-          }
-
-          if (flattened.length === 0) {
-            process.stdout.write(colors.dim('No submissions found.\n'));
-            return;
-          }
-
-          const cols = options.columns
-            ? options.columns.split(',').map((c) => ({ header: c.toUpperCase(), key: c }))
-            : [
-                { header: 'ID', key: 'id', format: (v: unknown) => colors.dim(String(v)) },
-                {
-                  header: 'RECEIVED',
-                  key: 'receivedAt',
-                  format: (v: unknown) => formatAge(typeof v === 'string' ? v : undefined),
-                },
-                {
-                  header: 'DATA SUMMARY',
-                  format: (_: unknown, r: Record<string, unknown>) => {
-                    const entries = Object.entries(r).filter(
-                      ([k]) => k !== 'id' && k !== 'receivedAt',
-                    );
-                    return entries
-                      .slice(0, 3)
-                      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-                      .join(' ');
-                  },
-                },
-              ];
-
-          printTable({
-            columns: cols,
-            data: flattened,
-          });
-        } catch (err) {
-          exitWithError('webhook submissions', err);
-        }
-      },
-    );
+  // `webhook submissions <webhook>` keeps working as the shorthand for list.
+  submissionsListOptions(submissionsCmd.command('of <webhook>', { isDefault: true }))
+    .description('List submissions (shorthand for: submissions list)')
+    .action(listSubmissionsAction);
 
   // webhook submission <webhook> <submission-id>
   webhook
@@ -414,17 +439,22 @@ export function registerWebhookCommand(program: Command): void {
     );
 
   // webhook submissions export <webhook> [-o csv|json] [--file <path>]
-  webhook
-    .command('submissions-export <webhook>')
-    .alias('submissions export')
+  submissionsCmd
+    .command('export <webhook>')
     .description('Export all submissions for a webhook to CSV or JSON')
     .option('-o, --output <format>', 'Export format (csv|json)', 'csv')
     .option('--file <path>', 'Destination file path')
+    .option('--force', 'Overwrite the destination file if it exists')
     .option('--profile <name>', 'Profile to use')
     .action(
       async (
         webhookArg: string,
-        options: { output?: 'csv' | 'json'; file?: string; profile?: string },
+        options: {
+          output?: 'csv' | 'json';
+          file?: string;
+          force?: boolean;
+          profile?: string;
+        },
       ) => {
         try {
           const client = await getClient(options.profile);
@@ -453,7 +483,14 @@ export function registerWebhookCommand(program: Command): void {
             options.file ||
             `submissions-${resolved.slug}-${new Date().toISOString().slice(0, 10)}.${format}`;
 
-          await writeFile(target, content, 'utf8');
+          if (options.file && !options.force && existsSync(options.file)) {
+            throw new CliError(
+              `File "${options.file}" already exists\n  hint: pass --force to overwrite`,
+              ExitCode.Rejected,
+            );
+          }
+          // Submissions can hold personal information: owner-only mode.
+          await writeFile(target, content, { encoding: 'utf8', mode: 0o600 });
           printSuccess(`Exported ${flattened.length} submission(s) to ${target}`);
         } catch (err) {
           exitWithError('webhook submissions export', err);
@@ -585,7 +622,7 @@ export function registerWebhookCommand(program: Command): void {
       try {
         const client = await getClient(options.profile);
         await client.put('/admin/inbound-webhooks/settings', {
-          readerRoleIds: options.readerRole,
+          defaultReaderRoleIds: options.readerRole,
         });
         printSuccess('Inbound webhook settings updated');
       } catch (err) {
@@ -685,59 +722,6 @@ function flattenSubmission(row: Record<string, unknown>): Record<string, unknown
   }
 
   return result;
-}
-
-function generateExamplePayload(schema: Record<string, unknown>): Record<string, unknown> {
-  const payload: Record<string, unknown> = {};
-  const fields = (schema['fields'] || []) as Record<string, unknown>[];
-
-  for (const f of fields) {
-    const key = String(f['name'] || f['key'] || '');
-    const type = String(f['type'] || 'string');
-    if (!key) continue;
-
-    switch (type) {
-      case 'string':
-      case 'text':
-        payload[key] = 'Sample text';
-        break;
-      case 'number':
-        payload[key] = 42;
-        break;
-      case 'boolean':
-        payload[key] = true;
-        break;
-      case 'email':
-        payload[key] = 'user@example.com';
-        break;
-      case 'url':
-        payload[key] = 'https://microclub.info';
-        break;
-      case 'phone':
-        payload[key] = '+213555123456';
-        break;
-      case 'date':
-        payload[key] = '2026-10-23';
-        break;
-      case 'datetime':
-        payload[key] = '2026-10-23T12:00:00Z';
-        break;
-      case 'enum': {
-        const opts = (f['options'] || ['option_a']) as string[];
-        payload[key] = opts[0] || 'option_a';
-        break;
-      }
-      case 'multi_enum': {
-        const opts = (f['options'] || ['option_a']) as string[];
-        payload[key] = [opts[0] || 'option_a'];
-        break;
-      }
-      default:
-        payload[key] = 'test';
-    }
-  }
-
-  return payload;
 }
 
 async function readStdin(): Promise<string> {

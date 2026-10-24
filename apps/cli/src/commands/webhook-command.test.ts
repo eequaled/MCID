@@ -13,7 +13,8 @@ describe('webhook settings set', () => {
       ['webhook', 'settings', 'set', '--reader-role', '123456789012345678'],
       {
         routes: baseRoutes({
-          'PUT /admin/inbound-webhooks/settings': () => json({ defaultReaderRoleIds: ['123456789012345678'] }),
+          'PUT /admin/inbound-webhooks/settings': () =>
+            json({ defaultReaderRoleIds: ['123456789012345678'] }),
         }),
       },
     );
@@ -65,4 +66,3 @@ describe('webhook submissions export (nested grammar)', () => {
     expect(result.stdout).toContain('Exported');
   });
 });
-

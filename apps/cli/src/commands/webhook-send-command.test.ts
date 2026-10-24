@@ -29,7 +29,11 @@ async function configWithStoredSecret(tmp: string): Promise<string> {
   vi.stubEnv('MCID_CLI_CONFIG_PATH', path);
   await updateConfig(path, (config: Config) =>
     setWebhookSecret(
-      { ...config, activeProfile: 'default', profiles: { default: { baseUrl: 'http://localhost:3000', session: null } } },
+      {
+        ...config,
+        activeProfile: 'default',
+        profiles: { default: { baseUrl: 'http://localhost:3000', session: null } },
+      },
       'default',
       WEBHOOK_ID,
       { secret: 'whsec_test_secret', name: inboundWebhook.name, slug: inboundWebhook.slug },
@@ -77,7 +81,15 @@ describe('webhook send --print-curl', () => {
     await configWithStoredSecret(tmp);
 
     const masked = await runCli(
-      ['webhook', 'send', 'contact-form', '--example', '--print-curl', '--api-key', 'mcid_live_supersecretkey123'],
+      [
+        'webhook',
+        'send',
+        'contact-form',
+        '--example',
+        '--print-curl',
+        '--api-key',
+        'mcid_live_supersecretkey123',
+      ],
       { routes: sendRoutes() },
     );
     expect(masked.exitCode).toBe(0);
@@ -85,7 +97,16 @@ describe('webhook send --print-curl', () => {
     expect(masked.stdout).toContain('<MCID_API_KEY>');
 
     const revealed = await runCli(
-      ['webhook', 'send', 'contact-form', '--example', '--print-curl', '--reveal', '--api-key', 'mcid_live_supersecretkey123'],
+      [
+        'webhook',
+        'send',
+        'contact-form',
+        '--example',
+        '--print-curl',
+        '--reveal',
+        '--api-key',
+        'mcid_live_supersecretkey123',
+      ],
       { routes: sendRoutes() },
     );
     expect(revealed.exitCode).toBe(0);
@@ -98,14 +119,13 @@ describe('webhook send --example', () => {
     const tmp = await mkdtemp(join(tmpdir(), 'mcid-send-'));
     await configWithStoredSecret(tmp);
 
-    const result = await runCli(
-      ['webhook', 'send', 'contact-form', '--example', '--print-curl'],
-      { routes: sendRoutes() },
-    );
+    const result = await runCli(['webhook', 'send', 'contact-form', '--example', '--print-curl'], {
+      routes: sendRoutes(),
+    });
 
     expect(result.exitCode).toBe(0);
     // -d '<json>' body: fields from the step, enum emitted as its value string
-    const payloadMatch = result.stdout.match(/-d '(.*)'/);
+    const payloadMatch = result.stdout.match(/-d '([\s\S]*)'/);
     expect(payloadMatch).not.toBeNull();
     const payload = JSON.parse(payloadMatch![1] as string) as Record<string, unknown>;
     expect(payload['message']).toBeTypeOf('string');
@@ -129,8 +149,8 @@ describe('webhook send --data schema validation', () => {
 
     expect(result.exitCode).not.toBe(0);
     // no request to the ingest endpoint was made
-    expect(
-      result.requests.some((r) => r.path === `/inbound-webhooks/${WEBHOOK_ID}/submit`),
-    ).toBe(false);
+    expect(result.requests.some((r) => r.path === `/inbound-webhooks/${WEBHOOK_ID}/submit`)).toBe(
+      false,
+    );
   });
 });
