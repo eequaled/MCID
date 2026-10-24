@@ -31,7 +31,8 @@ export async function confirmDestructive(options: ConfirmDestructiveOptions): Pr
   });
 
   if (answer !== resourceName) {
-    throw new CliError('Confirmation text did not match; action aborted', ExitCode.Ok);
+    // A cancelled destructive action must not look like success to scripts.
+    throw new CliError('Confirmation text did not match; action aborted', ExitCode.Rejected);
   }
 }
 

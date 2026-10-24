@@ -58,13 +58,14 @@ export const inboundWebhook = {
  * The routes every resolver needs (server/project/webhook/member lookups),
  * overridable per test. `overrides` keys win over the base routes.
  */
-export function baseRoutes(overrides: Record<string, RouteHandler> = {}): Record<string, RouteHandler> {
+export function baseRoutes(
+  overrides: Record<string, RouteHandler> = {},
+): Record<string, RouteHandler> {
   const base: Record<string, RouteHandler> = {
     'GET /servers': () => json([mainServer, otherServer]),
     'GET /admin/projects': () => json([projectRecord]),
     'GET /admin/inbound-webhooks': () => json([inboundWebhook]),
-    'GET /admin/members': () =>
-      json({ data: [], total: 0, page: 1, limit: 20, totalPages: 0 }),
+    'GET /admin/members': () => json({ data: [], total: 0, page: 1, limit: 20, totalPages: 0 }),
   };
   return { ...base, ...overrides };
 }
@@ -96,9 +97,7 @@ export const channelList = {
       createdAt: '2026-01-15T14:30:00.000Z',
     },
   ],
-  categories: [
-    { id: CATEGORY_ID, name: 'Text Channels', position: 0, children: [CHANNEL_ID] },
-  ],
+  categories: [{ id: CATEGORY_ID, name: 'Text Channels', position: 0, children: [CHANNEL_ID] }],
 };
 
 /** GetMessagesResponseDto: messages carry `timestamp`, response carries `hasMore`. */

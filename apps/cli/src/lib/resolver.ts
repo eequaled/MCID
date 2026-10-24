@@ -184,23 +184,27 @@ export async function resolveMember(
     return { discordId: clean, username: clean };
   }
 
-  // Otherwise, search members via /admin/members?search=
+  // Otherwise, search members via /admin/members?search= (a full page, so a
+  // member beyond the API's 20-row default is still found)
   const res = await client.get<
     { data?: MemberEntity[]; members?: MemberEntity[] } | MemberEntity[]
-  >(`/admin/members?search=${encodeURIComponent(clean)}`, { resource: 'member' });
+  >(`/admin/members?search=${encodeURIComponent(clean)}&limit=100`, {
+    resource: 'member',
+  });
 
   const list: MemberEntity[] = Array.isArray(res) ? res : res.data || res.members || [];
 
   const matches = list.filter(
     (m) =>
       m.username.toLowerCase() === clean.toLowerCase() ||
+      (m.globalName && m.globalName.toLowerCase() === clean.toLowerCase()) ||
       (m.displayName && m.displayName.toLowerCase() === clean.toLowerCase()),
   );
 
   const firstMatch = matches[0];
   if (matches.length === 1 && firstMatch) {
     return {
-      discordId: firstMatch.memberId || firstMatch.discordId || firstMatch.id || clean,
+      discordId: firstMatch.memberId || firstMatch.discordId || firstMatch.id || '',
       username: firstMatch.username,
     };
   }
@@ -215,8 +219,10 @@ export async function resolveMember(
     );
   }
 
-  // Fallback: If not found in search, try raw string if it's already an ID
-  return { discordId: clean, username: clean };
+  throw new CliError(
+    `Member "${idOrUsername}" not found\n  hint: check the username, or specify the Discord ID directly`,
+    ExitCode.NotFound,
+  );
 }
 
 /**

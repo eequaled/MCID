@@ -10,7 +10,8 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**'],
       // The reviewer's floor: the new command surface must stay covered, not
-      // just the lib/ helpers the old suite tested.
+      // just the lib/ helpers the old suite tested. Calibrated to the green
+      // suite with headroom under CI's full run (37/27/37/38 measured).
       thresholds: {
         'src/commands/**': {
           statements: 35,
