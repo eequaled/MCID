@@ -20,6 +20,16 @@ export interface ProjectKeyLookup {
   baseUrl?: string;
 }
 
+/** Minimal HTML escaping for the one string the callback page reflects. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function registerDevCommand(program: Command): void {
   const devCmd = program
     .command('dev')
@@ -32,6 +42,11 @@ export function registerDevCommand(program: Command): void {
     .requiredOption('--project <project>', 'Target project name or ID')
     .option('--server <server>', 'Discord server to authenticate against')
     .option('--port <port>', 'Local callback listener port (default 3000)', '3000')
+    .option(
+      '--timeout <seconds>',
+      'How long to wait for the SSO callback before giving up (default 300)',
+      '300',
+    )
     .option('--silent', 'Test silent login (prompt=none)')
     .option('--reveal', 'Print the full session token')
     .option('--api-key <key>', 'Explicit project API key')
@@ -42,6 +57,7 @@ export function registerDevCommand(program: Command): void {
         project?: string;
         server?: string;
         port: string;
+        timeout: string;
         silent?: boolean;
         reveal?: boolean;
         apiKey?: string;
@@ -114,7 +130,7 @@ export function registerDevCommand(program: Command): void {
 
                 if (error) {
                   res.writeHead(400, { 'Content-Type': 'text/html' });
-                  res.end(`<h3>MCID SSO Error: ${error}</h3>`);
+                  res.end(`<h3>MCID SSO Error: ${escapeHtml(error)}</h3>`);
                   rejectCallback(new CliError(`SSO returned error: ${error}`, ExitCode.Rejected));
                   return;
                 }
@@ -142,8 +158,10 @@ export function registerDevCommand(program: Command): void {
             }
           });
 
+          // Loopback only: the callback carries a one-time auth code, it must
+          // not be reachable from the network like login-flow's listener.
           await new Promise<void>((res, rej) => {
-            server.listen(port, () => res());
+            server.listen(port, '127.0.0.1', () => res());
             server.once('error', rej);
           });
 
@@ -167,8 +185,23 @@ export function registerDevCommand(program: Command): void {
           }
 
           let code: string;
+          const timeoutMs = Math.max(1, Number(options.timeout) || 300) * 1000;
           try {
-            code = await callbackPromise;
+            code = await Promise.race([
+              callbackPromise,
+              new Promise<never>((_, reject) =>
+                setTimeout(
+                  () =>
+                    reject(
+                      new CliError(
+                        `SSO callback timed out after ${options.timeout}s -- no authorization code arrived`,
+                        ExitCode.Rejected,
+                      ),
+                    ),
+                  timeoutMs,
+                ).unref?.(),
+              ),
+            ]);
           } finally {
             server.close();
           }
@@ -250,98 +283,119 @@ export function registerDevCommand(program: Command): void {
       },
     );
 
-  // dev token validate <token>
-  devCmd
-    .command('token-validate <token>')
-    .alias('token validate')
+  // dev token validate|refresh — real nested subcommands (a space alias can
+  // never match, commander compares one argv token), with the hyphenated
+  // spellings kept as shorthands.
+  const tokenCmd = devCmd
+    .command('token')
+    .description('Validate and refresh project session tokens');
+
+  const tokenValidateAction = async (
+    token: string,
+    options: { apiKey?: string; profile?: string; json?: boolean },
+  ): Promise<void> => {
+    try {
+      const keyInfo = await resolveProjectKey(options.apiKey, options.profile);
+      const baseUrl = keyInfo.baseUrl || (await resolveApiBaseUrl(options.profile));
+
+      const res = await fetch(`${baseUrl}/api/auth/validate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': keyInfo.apiKey,
+        },
+        body: JSON.stringify({ token }),
+      });
+
+      if (!res.ok) {
+        throw new CliError(
+          `Session token is invalid or expired (HTTP ${res.status})`,
+          ExitCode.Auth,
+        );
+      }
+
+      const data = await res.json();
+      if (options.json) {
+        printJson(data);
+        return;
+      }
+
+      printSuccess('Token is valid');
+      printJson(data);
+    } catch (err) {
+      exitWithError('dev token validate', err);
+    }
+  };
+
+  const tokenValidateOptions = (cmd: Command) =>
+    cmd
+      .option('--api-key <key>', 'Project API key')
+      .option('--profile <name>', 'Profile to use')
+      .option('--json', 'Output as JSON');
+
+  tokenValidateOptions(tokenCmd.command('validate <token>'))
     .description('Validate a session token using project API key')
-    .option('--api-key <key>', 'Project API key')
-    .option('--profile <name>', 'Profile to use')
-    .option('--json', 'Output as JSON')
-    .action(
-      async (token: string, options: { apiKey?: string; profile?: string; json?: boolean }) => {
-        try {
-          const keyInfo = await resolveProjectKey(options.apiKey, options.profile);
-          const baseUrl = keyInfo.baseUrl || (await resolveApiBaseUrl(options.profile));
+    .action(tokenValidateAction);
+  tokenValidateOptions(devCmd.command('token-validate <token>'))
+    .description(
+      'Validate a session token using project API key (shorthand for: dev token validate)',
+    )
+    .action(tokenValidateAction);
 
-          const res = await fetch(`${baseUrl}/api/auth/validate`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-API-Key': keyInfo.apiKey,
-            },
-            body: JSON.stringify({ token }),
-          });
+  const tokenRefreshAction = async (
+    refreshToken: string,
+    options: { token?: string; profile?: string; reveal?: boolean; json?: boolean },
+  ): Promise<void> => {
+    try {
+      const cfg = await loadConfig(configPath());
+      const profile = resolveProfileName(cfg, options.profile);
+      const baseUrl = normalizeBaseUrl(
+        process.env.MCID_API_URL || cfg.profiles[profile]?.baseUrl || 'http://localhost:3000',
+      );
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${options.token}`,
+      };
 
-          if (!res.ok) {
-            throw new CliError(
-              `Session token is invalid or expired (HTTP ${res.status})`,
-              ExitCode.Auth,
-            );
-          }
+      const res = await fetch(`${baseUrl}/api/auth/token/refresh`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ refreshToken }),
+      });
 
-          const data = await res.json();
-          if (options.json) {
-            printJson(data);
-            return;
-          }
+      if (!res.ok) {
+        throw new CliError(`Refresh failed (HTTP ${res.status})`, ExitCode.Auth);
+      }
 
-          printSuccess('Token is valid');
-          printJson(data);
-        } catch (err) {
-          exitWithError('dev token validate', err);
-        }
-      },
-    );
+      const data = await res.json();
+      // The old pair is already invalidated server-side; masking the new one
+      // would leave the operator with no usable token at all.
+      if (options.json) {
+        printJson(data, true);
+        return;
+      }
 
-  // dev token refresh <refresh-token>
-  devCmd
-    .command('token-refresh <refreshToken>')
-    .alias('token refresh')
+      printSuccess(
+        'Session refreshed successfully; the new token pair follows (the old one is now invalid)',
+      );
+      printJson(data, true);
+    } catch (err) {
+      exitWithError('dev token refresh', err);
+    }
+  };
+
+  const tokenRefreshOptions = (cmd: Command) =>
+    cmd
+      .requiredOption('--token <sessionToken>', 'Active session token')
+      .option('--profile <name>', 'Profile to use')
+      .option('--json', 'Output as JSON');
+
+  tokenRefreshOptions(tokenCmd.command('refresh <refreshToken>'))
     .description('Refresh an active session using refresh token')
-    .requiredOption('--token <sessionToken>', 'Active session token')
-    .option('--profile <name>', 'Profile to use')
-    .option('--reveal', 'Show full token in output')
-    .option('--json', 'Output as JSON')
-    .action(
-      async (
-        refreshToken: string,
-        options: { token?: string; profile?: string; reveal?: boolean; json?: boolean },
-      ) => {
-        try {
-          const cfg = await loadConfig(configPath());
-          const profile = resolveProfileName(cfg, options.profile);
-          const baseUrl = normalizeBaseUrl(
-            process.env.MCID_API_URL || cfg.profiles[profile]?.baseUrl || 'http://localhost:3000',
-          );
-          const headers: Record<string, string> = {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${options.token}`,
-          };
-
-          const res = await fetch(`${baseUrl}/api/auth/token/refresh`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ refreshToken }),
-          });
-
-          if (!res.ok) {
-            throw new CliError(`Refresh failed (HTTP ${res.status})`, ExitCode.Auth);
-          }
-
-          const data = await res.json();
-          if (options.json) {
-            printJson(data, options.reveal);
-            return;
-          }
-
-          printSuccess('Session refreshed successfully');
-          printJson(data, options.reveal);
-        } catch (err) {
-          exitWithError('dev token refresh', err);
-        }
-      },
-    );
+    .action(tokenRefreshAction);
+  tokenRefreshOptions(devCmd.command('token-refresh <refreshToken>'))
+    .description('Refresh an active session using refresh token (shorthand for: dev token refresh)')
+    .action(tokenRefreshAction);
 
   // dev check <member> <permissions...> [--server <s>]
   devCmd
@@ -479,7 +533,7 @@ export function registerDevCommand(program: Command): void {
           ].join('\n');
 
           if (options.file) {
-            await writeFile(options.file, `${envBlock}\n`, 'utf8');
+            await writeFile(options.file, `${envBlock}\n`, { encoding: 'utf8', mode: 0o600 });
             printSuccess(`Wrote project configuration to ${options.file}`);
           } else {
             process.stdout.write(`${envBlock}\n`);

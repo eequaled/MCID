@@ -73,16 +73,12 @@ describe('dev sso callback listener', () => {
     },
   );
 
-  it(
-    'times out in --silent mode instead of hanging forever',
-    { timeout: 20_000 },
-    async () => {
-      const result = await runCli([...ssoArgs.slice(0, -2), '--timeout', '1'], {
-        routes: ssoRoutes(),
-      });
+  it('times out in --silent mode instead of hanging forever', { timeout: 20_000 }, async () => {
+    const result = await runCli([...ssoArgs, '--timeout', '1'], {
+      routes: ssoRoutes(),
+    });
 
-      expect(result.exitCode).not.toBe(0);
-      expect(result.stderr).toMatch(/timed out|timeout/i);
-    },
-  );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/timed out|timeout/i);
+  });
 });
