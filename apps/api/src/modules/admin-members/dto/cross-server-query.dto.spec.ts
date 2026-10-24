@@ -1,4 +1,5 @@
 import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
 import {
   CrossServerQueryDto,
   ExportQueryDto,
@@ -122,5 +123,24 @@ describe('CrossServerQueryDto & toStringArray', () => {
       expect(dto.roleId).toEqual(['role-1', 'role-2']);
       expect(dto.format).toBe('csv');
     });
+  });
+});
+
+describe('CrossServerQueryDto joinedAfter', () => {
+  it('accepts an ISO date joinedAfter filter', () => {
+    const dto = plainToInstance(CrossServerQueryDto, {
+      joinedAfter: '2026-01-01T00:00:00Z',
+    });
+    const errors = validateSync(dto);
+    expect(errors).toHaveLength(0);
+    expect(dto.joinedAfter).toBe('2026-01-01T00:00:00Z');
+  });
+
+  it('validates joinedAfter as a date, so it is a declared query field', () => {
+    const dto = plainToInstance(CrossServerQueryDto, {
+      joinedAfter: 'not-a-date',
+    });
+    const errors = validateSync(dto);
+    expect(errors.some((e) => e.property === 'joinedAfter')).toBe(true);
   });
 });

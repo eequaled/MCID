@@ -252,7 +252,7 @@ describeIf('/api/admin/access and level enforcement (e2e)', () => {
     const rows = await db
       .select()
       .from(auditLogs)
-      .where(eq(auditLogs.actionType, 'permission'));
+      .where(eq(auditLogs.actionType, 'access'));
 
     expect(rows).toHaveLength(2);
     expect(rows[1]).toEqual(
