@@ -22,6 +22,7 @@ import {
   toCsv,
 } from '../lib/output.js';
 import { resolveMember, resolveProject, resolveServer } from '../lib/resolver.js';
+import { parseSince } from '../lib/time.js';
 import { colors, formatSparkline } from '../lib/tui.js';
 import { resolveSession } from '../session.js';
 
@@ -34,9 +35,9 @@ interface HealthResponse {
 
 interface SyncStatusItem {
   serverId: string;
-  serverName?: string;
   status: string;
-  lastSyncedAt?: string | null;
+  /** SyncStatusDto field name. */
+  lastSyncAt?: string | null;
 }
 
 export function registerOpsCommand(program: Command): void {
@@ -96,6 +97,16 @@ export function registerOpsCommand(program: Command): void {
           `  Discord:     ${discordText} (gateway latency: ${health.discord?.latency ?? 0}ms)\n`,
         );
 
+        // The sync rows carry serverId + lastSyncAt only; resolve names here.
+        const serverNames = new Map<string, string>();
+        try {
+          for (const s of await client.get<{ id: string; name?: string }[]>('/servers')) {
+            serverNames.set(s.id, s.name ?? s.id);
+          }
+        } catch {
+          // Names are cosmetic; ids still identify the rows.
+        }
+
         process.stdout.write(`\n${colors.bold('Discord Servers Synchronization:')}\n`);
         if (syncServers.length === 0) {
           process.stdout.write(colors.dim('  No servers registered.\n'));
@@ -108,16 +119,21 @@ export function registerOpsCommand(program: Command): void {
             else syncStatus = colors.yellow(s.status || 'never');
 
             process.stdout.write(
-              `  ${colors.dim('•')} ${colors.bold(s.serverName || s.serverId)}: ${syncStatus} (last sync: ${formatAge(s.lastSyncedAt)})\n`,
+              `  ${colors.dim('•')} ${colors.bold(serverNames.get(s.serverId) || s.serverId)}: ${syncStatus} (last sync: ${formatAge(s.lastSyncAt)})\n`,
             );
           }
         }
         process.stdout.write('\n');
 
-        // Exit 5 means the CLI could not complete the check, not that a
-        // downstream integration is degraded. A disconnected Discord gateway
-        // is expected during local development without a bot token.
-        const coreHealthy = isApiOk && isDbOk && isRedisOk;
+        // Exit 5 means the CLI could not complete the check. Redis is an
+        // optional component: deployments without it stay healthy, with a
+        // warning line only. The API and the database are the core.
+        const coreHealthy = isApiOk && isDbOk;
+        if (!isRedisOk) {
+          process.stdout.write(
+            `  ${colors.yellow('!')} Redis is ${health.redis?.status ?? 'unavailable'} (optional component — caching is degraded)\n\n`,
+          );
+        }
         if (!coreHealthy) {
           process.exitCode = ExitCode.Unexpected;
         }
@@ -202,7 +218,9 @@ export function registerOpsCommand(program: Command): void {
       try {
         const client = await getClient(options.profile);
         let path = '/admin/monitoring/auth-failures';
-        if (options.since) path += `?dateFrom=${encodeURIComponent(options.since)}`;
+        if (options.since) {
+          path += `?dateFrom=${encodeURIComponent(parseSince(options.since, '--since'))}`;
+        }
         const raw = await client.get(path);
         const list = normalizeAuthFailures(raw);
 
@@ -242,9 +260,12 @@ export function registerOpsCommand(program: Command): void {
     .alias('ls')
     .description('List recent audit log entries')
     .option('--actor <member>', 'Filter by admin actor')
-    .option('--action <action>', 'Filter by action name')
+    .option(
+      '--action <category>',
+      'Filter by action category (auth, project, server, role, webhook, member, sync, permission, access)',
+    )
     .option('--resource <resource>', 'Filter by resource/entity type')
-    .option('--since <date>', 'Start date (ISO or 24h, 7d)')
+    .option('--since <date>', 'Start date (ISO timestamp or 30m, 24h, 7d)')
     .option('--until <date>', 'End date')
     .option('--follow', 'Poll for new entries continuously')
     .option('--profile <name>', 'Profile to use')
@@ -269,13 +290,32 @@ export function registerOpsCommand(program: Command): void {
             actorId = resolved.discordId;
           }
 
+          const ACTION_CATEGORIES = [
+            'auth',
+            'project',
+            'server',
+            'role',
+            'webhook',
+            'member',
+            'sync',
+            'permission',
+            'access',
+          ];
+          if (options.action && !ACTION_CATEGORIES.includes(options.action)) {
+            throw new CliError(
+              `Unknown action category "${options.action}". Expected one of: ${ACTION_CATEGORIES.join(', ')}`,
+              ExitCode.Usage,
+            );
+          }
+
           const buildParams = () => {
             const params = new URLSearchParams();
             params.set('limit', '500');
             if (actorId) params.set('actorId', actorId);
+            // --action filters the category; the row's action name is not filterable.
             if (options.action) params.set('actionType', options.action);
-            if (options.since) params.set('dateFrom', options.since);
-            if (options.until) params.set('dateTo', options.until);
+            if (options.since) params.set('dateFrom', parseSince(options.since, '--since'));
+            if (options.until) params.set('dateTo', parseSince(options.until, '--until'));
             return params;
           };
 
@@ -356,7 +396,7 @@ export function registerOpsCommand(program: Command): void {
         const csvContent = typeof data === 'string' ? data : toCsv(data);
         const defaultFilename = `audit-${new Date().toISOString().slice(0, 10)}.csv`;
         const path = options.file || defaultFilename;
-        await writeFile(path, csvContent, 'utf8');
+        await writeFile(path, csvContent, { encoding: 'utf8', mode: 0o600 });
         printSuccess(`Exported audit logs to ${path}`);
       } catch (err) {
         exitWithError('audit export', err);
@@ -584,7 +624,7 @@ export function registerOpsCommand(program: Command): void {
             options.file ||
             `stats-${options.type || 'members'}-${new Date().toISOString().slice(0, 10)}.${format}`;
 
-          await writeFile(target, content, 'utf8');
+          await writeFile(target, content, { encoding: 'utf8', mode: 0o600 });
           printSuccess(`Exported ${options.type || 'members'} stats to ${target}`);
         } catch (err) {
           exitWithError('stats export', err);
@@ -690,17 +730,25 @@ export function registerOpsCommand(program: Command): void {
     });
 
   settingsCmd
-    .command('reset [keys...]')
-    .description('Reset settings back to environment defaults')
+    .command('reset')
+    .description('Reset ALL settings overrides back to environment defaults')
     .option('--yes', 'Skip confirmation prompt')
     .option('--profile <name>', 'Profile to use')
-    .action(async (keys: string[], options: { yes?: boolean; profile?: string }) => {
+    .action(async (options: { yes?: boolean; profile?: string }) => {
       try {
         const client = await getClient(options.profile);
-        if (!(await confirmAction('Reset settings to environment defaults?', options.yes))) return;
+        // The API clears every override; say so, so nobody expects per-key reset.
+        if (
+          !(await confirmAction(
+            'Reset ALL settings overrides to environment defaults?',
+            options.yes,
+          ))
+        ) {
+          return;
+        }
 
-        await client.post('/admin/settings/reset', { keys: keys.length > 0 ? keys : undefined });
-        printSuccess('Settings reset to defaults');
+        await client.post('/admin/settings/reset');
+        printSuccess('All settings overrides reset to defaults');
       } catch (err) {
         exitWithError('settings reset', err);
       }
@@ -722,9 +770,24 @@ export function registerOpsCommand(program: Command): void {
       try {
         const client = await getClient(options.profile);
         const resolved = await resolveProject(client, options.project);
-        const webhooks = await client.get<Record<string, unknown>[]>(
-          `/admin/projects/${encodeURIComponent(resolved.id)}/webhooks`,
-        );
+        // The endpoint returns {webhooks, total, limit, offset}; page until done.
+        const pageSize = 100;
+        const webhooks: Record<string, unknown>[] = [];
+        for (let offset = 0; ; offset += pageSize) {
+          const page = await client.get<{
+            webhooks?: Record<string, unknown>[];
+            total?: number;
+          }>(
+            `/admin/projects/${encodeURIComponent(resolved.id)}/webhooks?limit=${pageSize}&offset=${offset}`,
+          );
+          webhooks.push(...(page.webhooks ?? []));
+          if (
+            (page.webhooks ?? []).length < pageSize ||
+            (page.total !== undefined && webhooks.length >= page.total)
+          ) {
+            break;
+          }
+        }
 
         if (options.json) {
           printJson(webhooks);

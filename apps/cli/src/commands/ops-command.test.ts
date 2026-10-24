@@ -8,10 +8,9 @@ describe('settings reset', () => {
   // The API's POST /admin/settings/reset takes no body: it clears every
   // override. The CLI must not pretend per-key reset exists.
   it('rejects per-key arguments with a usage error instead of wiping everything', async () => {
-    const result = await runCli(
-      ['settings', 'reset', 'cache.statsTtlMs', '--yes'],
-      { routes: baseRoutes() },
-    );
+    const result = await runCli(['settings', 'reset', 'cache.statsTtlMs', '--yes'], {
+      routes: baseRoutes(),
+    });
 
     expect(result.exitCode).toBe(64);
     expect(result.requests.some((r) => r.path === '/admin/settings/reset')).toBe(false);
@@ -27,7 +26,7 @@ describe('settings reset', () => {
     expect(result.exitCode).toBe(0);
     const post = result.requests.find((r) => r.path === '/admin/settings/reset');
     expect(post?.body).toBeUndefined();
-    expect(result.stdout).toContain('all settings');
+    expect(result.stdout.toLowerCase()).toContain('all settings');
   });
 });
 
@@ -35,7 +34,7 @@ describe('audit list filters', () => {
   it('converts --since durations to an ISO dateFrom the API accepts', async () => {
     const result = await runCli(['audit', 'list', '--since', '24h'], {
       routes: baseRoutes({
-        'GET /admin/audit/logs': (url) => json({ logs: [] }),
+        'GET /admin/audit/logs': () => json({ logs: [] }),
       }),
     });
 
@@ -88,31 +87,35 @@ describe('monitor auth-failures --since', () => {
 });
 
 describe('discord-webhook list', () => {
-  // WebhookListResponseDto: {webhooks, total, limit, offset}
-  const listPage = (offset: number) => ({
-    webhooks: [
-      {
-        id: `wh-${offset}-1`,
-        name: 'Deploy hook',
-        channelId: '444444444444444444',
-        channelName: 'general',
-        serverId: MAIN_SERVER_ID,
-        serverName: 'Micro Club',
-        createdAt: '2026-10-01T00:00:00.000Z',
-        usageCount: 3,
-        lastUsedAt: null,
-      },
-    ],
-    total: 2,
-    limit: 1,
-    offset,
+  // WebhookListResponseDto: {webhooks, total, limit, offset}, honoring paging.
+  const webhook = (i: number) => ({
+    id: `wh-${i}`,
+    name: i === 0 ? 'Deploy hook' : `Hook ${i}`,
+    channelId: '444444444444444444',
+    channelName: 'general',
+    serverId: MAIN_SERVER_ID,
+    serverName: 'Micro Club',
+    createdAt: '2026-10-01T00:00:00.000Z',
+    usageCount: 3,
+    lastUsedAt: null,
   });
+  const listRoute = (total: number) => (url: URL) => {
+    const offset = Number(url.searchParams.get('offset') ?? 0);
+    const limit = Number(url.searchParams.get('limit') ?? 50);
+    return json({
+      webhooks: Array.from({ length: Math.min(limit, total - offset) }, (_, i) =>
+        webhook(offset + i),
+      ),
+      total,
+      limit,
+      offset,
+    });
+  };
 
   it('unwraps {webhooks, total, limit, offset} and renders rows', async () => {
     const result = await runCli(['discord-webhook', 'list', '--project', 'Portal'], {
       routes: baseRoutes({
-        [`GET /admin/projects/${PROJECT_ID}/webhooks`]: (url) =>
-          json(listPage(Number(url.searchParams.get('offset') ?? 0))),
+        [`GET /admin/projects/${PROJECT_ID}/webhooks`]: listRoute(3),
       }),
     });
 
@@ -121,10 +124,10 @@ describe('discord-webhook list', () => {
   });
 
   it('pages with limit/offset until total rows are collected', async () => {
+    // 150 webhooks with a 100-row page: exactly two requests, all rows kept.
     const result = await runCli(['discord-webhook', 'list', '--project', 'Portal'], {
       routes: baseRoutes({
-        [`GET /admin/projects/${PROJECT_ID}/webhooks`]: (url) =>
-          json(listPage(Number(url.searchParams.get('offset') ?? 0))),
+        [`GET /admin/projects/${PROJECT_ID}/webhooks`]: listRoute(150),
       }),
     });
 
@@ -132,8 +135,9 @@ describe('discord-webhook list', () => {
     const pages = result.requests.filter(
       (r) => r.path === `/admin/projects/${PROJECT_ID}/webhooks`,
     );
-    expect(pages.length).toBeGreaterThanOrEqual(2);
-    expect(result.stdout).toContain('wh-1-1');
+    expect(pages).toHaveLength(2);
+    expect(pages[1]?.query['offset']).toBe('100');
+    expect(result.stdout).toContain('wh-149');
   });
 });
 
@@ -161,10 +165,11 @@ describe('status', () => {
   it('still fails when a core component (database) is down', async () => {
     const result = await runCli(['status'], {
       routes: baseRoutes({
-        'GET /admin/monitoring/health': () => json({
-          ...healthNoRedis,
-          database: { status: 'disconnected', queryTime: 0 },
-        }),
+        'GET /admin/monitoring/health': () =>
+          json({
+            ...healthNoRedis,
+            database: { status: 'disconnected', queryTime: 0 },
+          }),
         'GET /admin/sync/status/all': () => json([]),
       }),
     });
