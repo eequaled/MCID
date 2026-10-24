@@ -1,13 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  cleanupCliTest,
-  json,
-  runCli,
-  type RouteHandler,
-} from '../test-support/cli-harness.js';
+import { cleanupCliTest, json, runCli } from '../test-support/cli-harness.js';
 import {
   baseRoutes,
-  CATEGORY_ID,
   channelList,
   CHANNEL_ID,
   MAIN_SERVER_ID,
@@ -31,7 +25,7 @@ describe('server channels', () => {
     expect(result.stdout).toContain('Text Channels');
   });
 
-  it('prints channels from the wrapped shape with --json', async () => {
+  it('prints the derived channel array with --json', async () => {
     const result = await runCli(['server', 'channels', '--json'], {
       routes: baseRoutes({
         'GET /admin/servers/:serverId/channels': () => json(channelList),
@@ -39,17 +33,19 @@ describe('server channels', () => {
     });
 
     expect(result.exitCode).toBe(0);
-    const parsed = JSON.parse(result.stdout) as { channels?: unknown[] };
-    expect(parsed.channels).toHaveLength(2);
+    const parsed = JSON.parse(result.stdout) as {
+      id: string;
+      categoryName?: string;
+    }[];
+    expect(parsed).toHaveLength(2);
+    expect(parsed.find((c) => c.id === CHANNEL_ID)?.categoryName).toBe('Text Channels');
   });
 });
 
 describe('server channel --messages', () => {
   const routes = baseRoutes({
-    [`GET /admin/servers/:serverId/channels/${CHANNEL_ID}`]: () =>
-      json(channelList.channels[0]),
-    [`GET /admin/servers/:serverId/channels/${CHANNEL_ID}/messages`]: () =>
-      json(messagePage),
+    'GET /admin/servers/:serverId/channels': () => json(channelList),
+    [`GET /admin/servers/:serverId/channels/${CHANNEL_ID}/messages`]: () => json(messagePage),
   });
 
   it('renders messages from the {messages, hasMore} wrapper using timestamp', async () => {
@@ -89,14 +85,11 @@ describe('server add', () => {
   });
 
   it('sends name only when --name is passed', async () => {
-    const result = await runCli(
-      ['server', 'add', '777777777777777777', '--name', 'Launchpad'],
-      {
-        routes: baseRoutes({
-          'POST /servers': () => json({ ...mainServer, id: '777777777777777777' }, 201),
-        }),
-      },
-    );
+    const result = await runCli(['server', 'add', '777777777777777777', '--name', 'Launchpad'], {
+      routes: baseRoutes({
+        'POST /servers': () => json({ ...mainServer, id: '777777777777777777' }, 201),
+      }),
+    });
 
     expect(result.exitCode).toBe(0);
     const post = result.requests.find((r) => r.method === 'POST' && r.path === '/servers');

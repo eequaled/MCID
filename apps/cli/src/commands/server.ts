@@ -23,9 +23,10 @@ interface ServerRecord {
   name: string;
   isMain?: boolean;
   isActive?: boolean;
-  autoSyncEnabled?: boolean;
   syncFrequencyHours?: number;
-  lastSyncedAt?: string | null;
+  /** GET /servers: the last successful sync, from the sync log rollup. */
+  lastSyncAt?: string | null;
+  syncedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -34,9 +35,15 @@ interface ChannelRecord {
   id: string;
   name: string;
   type?: number | string;
-  categoryName?: string;
+  categoryName?: string | undefined;
   parentId?: string | null;
   position?: number;
+}
+
+/** ChannelListResponseDto: the API wraps the channels and returns categories separately. */
+interface ChannelListResponse {
+  channels: ChannelRecord[];
+  categories: { id: string; name: string }[];
 }
 
 export function registerServerCommand(program: Command): void {
@@ -85,8 +92,16 @@ export function registerServerCommand(program: Command): void {
           },
           {
             header: 'LAST SYNC',
-            key: 'lastSyncedAt',
-            format: (v) => colors.dim(formatAge(typeof v === 'string' ? v : undefined)),
+            format: (_, r) =>
+              colors.dim(
+                formatAge(
+                  typeof r['lastSyncAt'] === 'string'
+                    ? r['lastSyncAt']
+                    : typeof r['syncedAt'] === 'string'
+                      ? (r['syncedAt'] as string)
+                      : undefined,
+                ),
+              ),
           },
         ],
         data: servers as unknown as Record<string, unknown>[],
@@ -132,12 +147,12 @@ export function registerServerCommand(program: Command): void {
             Name: server.name + (server.isMain ? ' [main]' : ''),
             Status: server.isActive !== false ? colors.green('active') : colors.red('disabled'),
             'Main Server': server.isMain ? 'yes' : 'no',
-            'Auto Sync': server.autoSyncEnabled
-              ? `enabled (every ${server.syncFrequencyHours}h)`
-              : 'disabled',
-            'Last Synced': server.lastSyncedAt
-              ? `${formatDate(server.lastSyncedAt)} (${formatAge(server.lastSyncedAt)})`
-              : 'never',
+            'Auto Sync': `enabled (every ${server.syncFrequencyHours ?? 1}h)`,
+            'Last Synced': server.lastSyncAt
+              ? `${formatDate(server.lastSyncAt)} (${formatAge(server.lastSyncAt)})`
+              : server.syncedAt
+                ? `${formatDate(server.syncedAt)} (${formatAge(server.syncedAt)})`
+                : 'never',
             Created: formatDate(server.createdAt),
             Updated: formatDate(server.updatedAt),
           });
@@ -151,14 +166,28 @@ export function registerServerCommand(program: Command): void {
   serverCmd
     .command('add <guild-id>')
     .description('Register a new Discord server (guild) in MCID')
-    .option('--name <name>', 'Server name override')
+    .option('--name <name>', 'Server name override (defaults to the Discord guild name)')
     .option('--profile <name>', 'Profile to use')
     .action(async (guildId: string, options: { name?: string; profile?: string }) => {
       try {
         const client = await getClient(options.profile);
+        // POST /servers upserts and would reset an existing row's type, sync
+        // cadence, policy and enabled state — refuse instead of clobbering.
+        const existing = (await client.get<ServerRecord[]>('/servers')).find(
+          (s) => s.id === guildId,
+        );
+        if (existing) {
+          throw new CliError(
+            `Server "${existing.name || guildId}" (${guildId}) is already registered\n  hint: use \`mcid-cli server update ${guildId}\` to change it`,
+            ExitCode.Rejected,
+          );
+        }
+
         const res = await client.post<ServerRecord>('/servers', {
           guildId,
-          name: options.name || guildId,
+          // Omitted when not given: the API fills the real guild name from
+          // the bot cache; sending the id would name the server "1234...".
+          ...(options.name ? { name: options.name } : {}),
         });
         printSuccess(`Server "${res.name}" registered (ID: ${res.id})`);
       } catch (err) {
@@ -257,9 +286,17 @@ export function registerServerCommand(program: Command): void {
         try {
           const client = await getClient(options.profile);
           const resolved = await resolveServer(client, serverIdOrName);
-          const channels = await client.get<ChannelRecord[]>(
+          const list = await client.get<ChannelListResponse>(
             `/admin/servers/${resolved.id}/channels`,
           );
+          // No categoryName on the wire: derive it from parentId.
+          const categoryNames = new Map(
+            (list.categories ?? []).map((c) => [c.id, c.name] as const),
+          );
+          const channels: ChannelRecord[] = (list.channels ?? []).map((c) => ({
+            ...c,
+            categoryName: c.parentId ? categoryNames.get(c.parentId) : undefined,
+          }));
 
           if (options.json) {
             printJson(channels);
@@ -295,17 +332,54 @@ export function registerServerCommand(program: Command): void {
         options: { messages?: string; profile?: string; json?: boolean },
       ) => {
         try {
+          // Reject an out-of-range count before any request: the API 400s above 100.
+          if (options.messages) {
+            const count = Number(options.messages);
+            if (!Number.isInteger(count) || count < 1 || count > 100) {
+              throw new CliError(
+                `--messages must be between 1 and 100, got "${options.messages}"`,
+                ExitCode.Usage,
+              );
+            }
+          }
           const client = await getClient(options.profile);
           const resolved = await resolveServer(client, serverArg);
-          const channel = await client.get<ChannelRecord>(
-            `/admin/servers/${resolved.id}/channels/${channelId}`,
+          const list = await client.get<ChannelListResponse>(
+            `/admin/servers/${resolved.id}/channels`,
           );
+          const categoryNames = new Map(
+            (list.categories ?? []).map((c) => [c.id, c.name] as const),
+          );
+          const raw = (list.channels ?? []).find((c) => c.id === channelId);
+          if (!raw) {
+            throw new CliError(
+              `Channel "${channelId}" not found on server "${resolved.name}"`,
+              ExitCode.NotFound,
+            );
+          }
+          const channel: ChannelRecord = {
+            ...raw,
+            categoryName: raw.parentId ? categoryNames.get(raw.parentId) : undefined,
+          };
 
-          let messages: unknown[] = [];
+          let messages: {
+            id: string;
+            content: string;
+            author: { username: string };
+            timestamp: string;
+          }[] = [];
           if (options.messages) {
-            messages = await client.get(
+            const page = await client.get<{
+              messages: {
+                id: string;
+                content: string;
+                author: { username: string };
+                timestamp: string;
+              }[];
+            }>(
               `/admin/servers/${resolved.id}/channels/${channelId}/messages?limit=${options.messages}`,
             );
+            messages = page.messages ?? [];
           }
 
           if (options.json) {
@@ -322,10 +396,10 @@ export function registerServerCommand(program: Command): void {
 
           if (messages.length > 0) {
             process.stdout.write(`\n${colors.bold('Recent Messages:')}\n`);
-            for (const msg of messages as Record<string, unknown>[]) {
-              const author = (msg.author as { username?: string })?.username || 'unknown';
+            for (const msg of messages) {
+              const author = msg.author?.username || 'unknown';
               process.stdout.write(
-                `  [${colors.dim(formatAge(msg.createdAt as string))}] ${colors.cyan(`@${author}`)}: ${msg.content}\n`,
+                `  [${colors.dim(formatAge(msg.timestamp))}] ${colors.cyan(`@${author}`)}: ${msg.content}\n`,
               );
             }
           }
