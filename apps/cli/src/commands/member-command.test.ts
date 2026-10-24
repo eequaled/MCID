@@ -77,12 +77,9 @@ describe('member list pagination', () => {
 
 describe('member list --joined-after', () => {
   it('forwards joinedAfter as an ISO date and renders the results', async () => {
-    const result = await runCli(
-      ['member', 'list', '--joined-after', '2026-01-01T00:00:00Z'],
-      {
-        routes: baseRoutes({ 'GET /admin/members': memberPagesRoute(1) }),
-      },
-    );
+    const result = await runCli(['member', 'list', '--joined-after', '2026-01-01T00:00:00Z'], {
+      routes: baseRoutes({ 'GET /admin/members': memberPagesRoute(1) }),
+    });
 
     expect(result.exitCode).toBe(0);
     const get = result.requests.find((r) => r.path === '/admin/members');

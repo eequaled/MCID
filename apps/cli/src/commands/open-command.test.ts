@@ -13,10 +13,9 @@ vi.mocked(openBrowser).mockClear();
 
 describe('open', () => {
   it('opens the web dashboard URL passed with --web, not the API host', async () => {
-    const result = await runCli(
-      ['open', '--web', 'https://mcid-web.example.com'],
-      { routes: baseRoutes() },
-    );
+    const result = await runCli(['open', '--web', 'https://mcid-web.example.com'], {
+      routes: baseRoutes(),
+    });
 
     expect(result.exitCode).toBe(0);
     expect(openBrowser).toHaveBeenCalledWith('https://mcid-web.example.com/dashboard');

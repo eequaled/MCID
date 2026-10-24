@@ -294,7 +294,7 @@ export function registerSyncCommand(program: Command): void {
   syncCmd
     .command('changes <syncLogId>')
     .description('View itemized member and role changes for a sync run')
-    .option('--type <type>', 'Filter by action (added, removed, updated)')
+    .option('--type <type>', 'Filter by what happened: added, removed, updated')
     .option('--profile <name>', 'Profile to use')
     .option('--json', 'Output as JSON')
     .option('-o, --output <format>', 'Output format (table|json|csv)', 'table')
@@ -310,16 +310,30 @@ export function registerSyncCommand(program: Command): void {
       ) => {
         try {
           const client = await getClient(options.profile);
-          let path = `/admin/sync/logs/${encodeURIComponent(syncLogId)}/changes`;
-          if (options.type) {
-            path += `?type=${encodeURIComponent(options.type)}`;
+          // Page with limit/offset until the API's `total` is covered; the
+          // endpoint defaults to 100 rows and --type maps to `action`.
+          const pageSize = 100;
+          const changes: ReturnType<typeof normalizeSyncChanges> = [];
+          for (let offset = 0; ; offset += pageSize) {
+            const params = new URLSearchParams({
+              limit: String(pageSize),
+              offset: String(offset),
+            });
+            if (options.type) params.set('action', options.type);
+            const raw = await client.get(
+              `/admin/sync/logs/${encodeURIComponent(syncLogId)}/changes?${params.toString()}`,
+            );
+            const pageRows = normalizeSyncChanges(raw);
+            changes.push(...pageRows);
+            const total = (raw as { total?: number }).total;
+            if (pageRows.length < pageSize || (total !== undefined && changes.length >= total)) {
+              break;
+            }
           }
-          const raw = await client.get(path);
-          const changes = normalizeSyncChanges(raw);
 
           const outFormat = options.json ? 'json' : options.output || 'table';
           if (outFormat === 'json') {
-            printJson(raw);
+            printJson({ changes, total: changes.length });
             return;
           }
           if (outFormat === 'csv') {

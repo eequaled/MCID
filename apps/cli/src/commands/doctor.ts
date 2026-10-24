@@ -2,7 +2,7 @@ import { stat } from 'node:fs/promises';
 import { Command } from 'commander';
 import { configDir, configPath, loadConfig } from '../config.js';
 import { defaultKeyProvider, encrypt, decrypt } from '../crypto-store.js';
-import { exitWithError } from '../errors.js';
+import { ExitCode, exitWithError } from '../errors.js';
 import { colors } from '../lib/tui.js';
 import { resolveSession } from '../session.js';
 
@@ -20,7 +20,8 @@ export function registerDoctorCommand(program: Command): void {
     .option('--profile <name>', 'Profile to test')
     .action(async (options: { profile?: string }) => {
       try {
-        await runDoctor(options.profile);
+        const allPassed = await runDoctor(options.profile);
+        if (!allPassed) process.exitCode = ExitCode.Unexpected;
       } catch (err) {
         exitWithError('doctor', err);
       }
@@ -28,6 +29,19 @@ export function registerDoctorCommand(program: Command): void {
 }
 
 export async function runDoctor(profileFlag?: string | undefined): Promise<boolean> {
+  const previousExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    return await runDoctorChecks(profileFlag).finally(() => {
+      if (process.exitCode === undefined) process.exitCode = previousExitCode;
+    });
+  } catch (err) {
+    process.exitCode = previousExitCode;
+    throw err;
+  }
+}
+
+async function runDoctorChecks(profileFlag?: string | undefined): Promise<boolean> {
   process.stdout.write(`${colors.bold('Running mcid-cli diagnostics...')}\n\n`);
   const checks: CheckResult[] = [];
 
@@ -146,22 +160,20 @@ export async function runDoctor(profileFlag?: string | undefined): Promise<boole
     } else {
       const session = await resolveSession(config, profileName, keys);
 
-      // Probe health endpoint
+      // Probe liveness on the unauthenticated API root: the health endpoint
+      // needs monitoring:read, which a valid admin may legitimately lack.
       try {
-        const healthUrl = `${session.baseUrl}/api/admin/monitoring/health`;
-        const res = await fetch(healthUrl, {
+        const rootUrl = `${session.baseUrl}/api`;
+        const res = await fetch(rootUrl, {
           signal: AbortSignal.timeout(5000),
-          headers: {
-            Accept: 'application/json',
-            Authorization: `Bearer ${session.token}`,
-          },
+          headers: { Accept: 'application/json' },
         });
 
-        if (res.ok) {
+        if (res.ok || res.status === 404) {
           checks.push({
             name: 'API reachability',
             passed: true,
-            message: `Connected to ${session.baseUrl} (health: HTTP ${res.status})`,
+            message: `Connected to ${session.baseUrl} (HTTP ${res.status})`,
           });
         } else {
           checks.push({

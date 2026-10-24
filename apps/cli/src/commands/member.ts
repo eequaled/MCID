@@ -48,6 +48,9 @@ export function registerMemberCommand(program: Command): void {
     role?: string[];
     search?: string;
     joinedAfter?: string;
+    limit?: string;
+    page?: string;
+    all?: boolean;
     crossServer?: boolean;
     profile?: string;
     json?: boolean;
@@ -95,15 +98,27 @@ export function registerMemberCommand(program: Command): void {
       }
 
       const resolved = await resolveServer(client, options.server);
-      const params = new URLSearchParams({ serverId: resolved.id });
-      if (options.search) params.set('search', options.search);
-      if (options.joinedAfter) params.set('joinedAfter', options.joinedAfter);
-      if (options.role && options.role.length > 0) {
-        for (const r of options.role) params.append('roleId', r);
+      // The API defaults to 20 rows per page; ask for a full page and page
+      // through with --all instead of silently truncating.
+      const limit = Math.min(100, Math.max(1, Number(options.limit ?? 100) || 100));
+      const page = Math.max(1, Number(options.page ?? 1) || 1);
+      const members: ReturnType<typeof normalizeMemberList> = [];
+      for (let current = page; ; current += 1) {
+        const params = new URLSearchParams({
+          serverId: resolved.id,
+          page: String(current),
+          limit: String(limit),
+        });
+        if (options.search) params.set('search', options.search);
+        if (options.joinedAfter) params.set('joinedAfter', options.joinedAfter);
+        if (options.role && options.role.length > 0) {
+          for (const r of options.role) params.append('roleId', r);
+        }
+        const raw = await client.get(`/admin/members?${params.toString()}`);
+        const pageRows = normalizeMemberList(raw);
+        members.push(...pageRows);
+        if (!options.all || pageRows.length < limit) break;
       }
-
-      const raw = await client.get(`/admin/members?${params.toString()}`);
-      const members = normalizeMemberList(raw);
 
       if (options.quiet) {
         printQuiet(members.map((m) => m.memberId));
@@ -112,11 +127,11 @@ export function registerMemberCommand(program: Command): void {
 
       const outFormat = options.json ? 'json' : options.output || 'table';
       if (outFormat === 'json') {
-        printJson(raw);
+        printJson(members);
         return;
       }
 
-      const rows = members.map((m) => ({
+      const tableRows = members.map((m) => ({
         memberId: m.memberId,
         username: m.username,
         nickname: m.displayName || '-',
@@ -125,7 +140,7 @@ export function registerMemberCommand(program: Command): void {
       }));
 
       if (outFormat === 'csv') {
-        process.stdout.write(toCsv(rows));
+        process.stdout.write(toCsv(tableRows));
         return;
       }
 
@@ -145,7 +160,7 @@ export function registerMemberCommand(program: Command): void {
             format: (v) => colors.dim(formatAge(typeof v === 'string' ? v : undefined)),
           },
         ],
-        data: rows,
+        data: tableRows,
       });
     } catch (err) {
       exitWithError('member list', err);
@@ -160,6 +175,9 @@ export function registerMemberCommand(program: Command): void {
     .option('--role <role...>', 'Filter by role ID')
     .option('--search <query>', 'Search username, nickname, or ID')
     .option('--joined-after <date>', 'Filter members joined after ISO date')
+    .option('--limit <n>', 'Rows per page, 1-100 (default 100)')
+    .option('--page <n>', 'Page number to start from (default 1)')
+    .option('--all', 'Fetch every page, not just the first')
     .option('--cross-server', 'Show members across all servers')
     .option('--profile <name>', 'Profile to use')
     .option('--json', 'Output as JSON')
@@ -392,7 +410,7 @@ export function registerMemberCommand(program: Command): void {
           const defaultFilename = `members-${resolvedServer.id}-${new Date().toISOString().slice(0, 10)}.${format}`;
           const targetFile = options.file || defaultFilename;
 
-          await writeFile(targetFile, content, 'utf8');
+          await writeFile(targetFile, content, { encoding: 'utf8', mode: 0o600 });
           const count = typeof data === 'string' ? undefined : data.length;
           printSuccess(
             `Exported ${count !== undefined ? `${count} member row(s)` : 'members'} to ${targetFile}`,

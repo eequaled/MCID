@@ -50,19 +50,15 @@ describe('doctor', () => {
     },
   );
 
-  it(
-    'exits non-zero when a check fails',
-    { timeout: 20_000 },
-    async () => {
-      await tempConfigEnv();
-      const result = await runCli(['doctor'], {
-        routes: baseRoutes({
-          'GET /': () => json({ message: 'not found' }, 404),
-          'GET /auth/admin/me': () => json({ message: 'nope' }, 401),
-        }),
-      });
+  it('exits non-zero when a check fails', { timeout: 20_000 }, async () => {
+    await tempConfigEnv();
+    const result = await runCli(['doctor'], {
+      routes: baseRoutes({
+        'GET /': () => json({ message: 'not found' }, 404),
+        'GET /auth/admin/me': () => json({ message: 'nope' }, 401),
+      }),
+    });
 
-      expect(result.exitCode).not.toBe(0);
-    },
-  );
+    expect(result.exitCode).not.toBe(0);
+  });
 });

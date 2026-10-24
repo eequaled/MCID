@@ -12,8 +12,9 @@ export function registerOpenCommand(program: Command): void {
   program
     .command('open [area] [id]')
     .description('Open an MCID dashboard page in the browser (project, server, webhook, docs)')
+    .option('--web <url>', 'Web dashboard base URL (or set MCID_WEB_URL)')
     .option('--profile <name>', 'Profile to use')
-    .action(async (area?: string, id?: string, options?: { profile?: string }) => {
+    .action(async (area?: string, id?: string, options?: { web?: string; profile?: string }) => {
       try {
         const config = await loadConfig(configPath());
         const profileName = resolveProfileName(config, options?.profile);
@@ -50,7 +51,10 @@ export function registerOpenCommand(program: Command): void {
           targetPath = `/${area}`;
         }
 
-        const fullUrl = `${session.baseUrl}${targetPath}`;
+        // The dashboard lives in the web app, a different origin from the
+        // API in the documented deployment; only the web URL can serve it.
+        const webBase = options?.web || process.env.MCID_WEB_URL || session.baseUrl;
+        const fullUrl = `${webBase}${targetPath}`;
         process.stdout.write(`Opening ${colors.cyan(fullUrl)} in browser...\n`);
         const opened = await openBrowser(fullUrl);
         if (!opened) {

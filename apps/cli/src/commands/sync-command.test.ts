@@ -29,9 +29,7 @@ describe('sync changes', () => {
     });
 
     expect(result.exitCode).toBe(0);
-    const pages = result.requests.filter(
-      (r) => r.path === '/admin/sync/logs/42/changes',
-    );
+    const pages = result.requests.filter((r) => r.path === '/admin/sync/logs/42/changes');
     expect(pages.length).toBeGreaterThanOrEqual(1);
     // With the default page size of 100 and 3 rows, one page suffices — but
     // the request must at least declare its page size instead of hoping the
@@ -48,9 +46,7 @@ describe('sync changes', () => {
     });
 
     expect(result.exitCode).toBe(0);
-    const pages = result.requests.filter(
-      (r) => r.path === '/admin/sync/logs/42/changes',
-    );
+    const pages = result.requests.filter((r) => r.path === '/admin/sync/logs/42/changes');
     expect(pages.length).toBeGreaterThanOrEqual(2);
     expect(result.stdout).toContain('member_150');
   });
