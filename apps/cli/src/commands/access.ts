@@ -191,246 +191,258 @@ export function registerAccessCommand(program: Command): void {
       }
     });
 
-  // access role set <role> <resource=level...>
-  accessCmd
-    .command('role-set <role> <grants...>')
-    .alias('role set')
-    .description('Update admin grants on a role (resource=level pairs)')
-    .option('--replace', 'Replace all grants instead of merging')
-    .option('--yes', 'Skip confirmation prompt')
-    .option('--profile <name>', 'Profile to use')
-    .action(
-      async (
-        roleArg: string,
-        grantPairs: string[],
-        options: { replace?: boolean; yes?: boolean; profile?: string },
-      ) => {
-        try {
-          const client = await getClient(options.profile);
-          // Access grants always target main-server roles. Use the access
-          // endpoint (id + name) rather than global role statistics, which
-          // cannot identify a role when several servers share a name.
-          const currentRoles = normalizeAccessRoles(await client.get('/admin/access/roles'));
-          const wanted = roleArg.startsWith('@') ? roleArg.slice(1) : roleArg;
-          const matches = currentRoles.filter(
-            (role) => role.id === wanted || role.name.toLowerCase() === wanted.toLowerCase(),
-          );
-          const resolvedRole = matches.find((role) => role.id === wanted) ?? matches[0];
-          if (!resolvedRole) {
-            throw new CliError(
-              `Role "${roleArg}" not found on the main server. Run \`mcid-cli access roles\` to list roles.`,
-              ExitCode.NotFound,
-            );
-          }
-          if (!wanted.match(/^\d+$/) && matches.length > 1) {
-            throw new CliError(
-              `Role name "${roleArg}" is ambiguous. Specify the role ID instead.`,
-              ExitCode.Usage,
-            );
-          }
-
-          const newGrants: Record<string, string> = {};
-          for (const pair of grantPairs) {
-            const [res, lvl] = pair.split('=');
-            if (!res || !lvl) {
-              throw new CliError(
-                `Invalid grant format "${pair}". Expected format: <resource>=<level>`,
-                ExitCode.Usage,
-              );
-            }
-            if (!isAccessResource(res)) {
-              throw new CliError(
-                `Unknown resource "${res}". Run \`mcid-cli access catalog\` to view valid resources.`,
-                ExitCode.Usage,
-              );
-            }
-            if (!isAccessLevel(lvl)) {
-              throw new CliError(
-                `Unknown access level "${lvl}". Expected one of: ${ACCESS_LEVELS.join(', ')}`,
-                ExitCode.Usage,
-              );
-            }
-            newGrants[res] = lvl;
-          }
-
-          // Merge with current grants unless --replace is passed
-          let targetGrants: Record<string, string> = {};
-          if (!options.replace && Object.keys(resolvedRole.grants).length > 0) {
-            targetGrants = { ...resolvedRole.grants };
-          }
-          Object.assign(targetGrants, newGrants);
-
-          // Show diff
-          process.stdout.write(
-            `${colors.bold(`Updating grants for role "${resolvedRole.name}":`)}\n`,
-          );
-          for (const [r, l] of Object.entries(newGrants)) {
-            process.stdout.write(`  ${colors.cyan('●')} ${r}: ${l}\n`);
-          }
-
-          if (
-            !(await confirmAction(
-              `Apply grant changes to role "${resolvedRole.name}"?`,
-              options.yes,
-            ))
-          ) {
-            return;
-          }
-
-          await client.put(`/admin/access/roles/${encodeURIComponent(resolvedRole.id)}`, {
-            grants: targetGrants,
-          });
-
-          printSuccess(`Grants updated for role "${resolvedRole.name}"`);
-        } catch (err) {
-          exitWithError('access role set', err);
-        }
-      },
-    );
-
-  // access member get <member>
-  accessCmd
-    .command('member-get <member>')
-    .alias('member get')
-    .description('Get member-specific access overrides')
-    .option('--profile <name>', 'Profile to use')
-    .option('--json', 'Output as JSON')
-    .action(async (memberArg: string, options: { profile?: string; json?: boolean }) => {
-      try {
-        const client = await getClient(options.profile);
-        const resolved = await resolveMember(client, memberArg);
-        const res = await client.get<{
-          memberId: string;
-          username?: string;
-          overrides: Record<string, string>;
-        }>(`/admin/access/members/${encodeURIComponent(resolved.discordId)}`);
-
-        if (options.json) {
-          printJson(res);
-          return;
-        }
-
-        printKeyValue({
-          Member: `@${resolved.username} (${resolved.discordId})`,
-          Overrides:
-            Object.keys(res.overrides || {}).length > 0
-              ? Object.entries(res.overrides)
-                  .map(([k, v]) => `${k}:${v}`)
-                  .join(', ')
-              : colors.dim('none'),
-        });
-      } catch (err) {
-        exitWithError('access member get', err);
+  // access role set <role> <resource=level...> (real nested subcommands;
+  // a space alias can never match since commander compares one argv token)
+  const roleCmd = accessCmd.command('role').description('Manage role grants');
+  const accessRoleSetOptions = (cmd: Command) =>
+    cmd
+      .option('--replace', 'Replace all grants instead of merging')
+      .option('--yes', 'Skip confirmation prompt')
+      .option('--profile <name>', 'Profile to use');
+  const roleSetAction = async (
+    roleArg: string,
+    grantPairs: string[],
+    options: { replace?: boolean; yes?: boolean; profile?: string },
+  ): Promise<void> => {
+    try {
+      const client = await getClient(options.profile);
+      // Access grants always target main-server roles. Use the access
+      // endpoint (id + name) rather than global role statistics, which
+      // cannot identify a role when several servers share a name.
+      const currentRoles = normalizeAccessRoles(await client.get('/admin/access/roles'));
+      const wanted = roleArg.startsWith('@') ? roleArg.slice(1) : roleArg;
+      const matches = currentRoles.filter(
+        (role) => role.id === wanted || role.name.toLowerCase() === wanted.toLowerCase(),
+      );
+      const resolvedRole = matches.find((role) => role.id === wanted) ?? matches[0];
+      if (!resolvedRole) {
+        throw new CliError(
+          `Role "${roleArg}" not found on the main server. Run \`mcid-cli access roles\` to list roles.`,
+          ExitCode.NotFound,
+        );
       }
-    });
+      if (!wanted.match(/^\d+$/) && matches.length > 1) {
+        throw new CliError(
+          `Role name "${roleArg}" is ambiguous. Specify the role ID instead.`,
+          ExitCode.Usage,
+        );
+      }
+
+      const newGrants: Record<string, string> = {};
+      for (const pair of grantPairs) {
+        const [res, lvl] = pair.split('=');
+        if (!res || !lvl) {
+          throw new CliError(
+            `Invalid grant format "${pair}". Expected format: <resource>=<level>`,
+            ExitCode.Usage,
+          );
+        }
+        if (!isAccessResource(res)) {
+          throw new CliError(
+            `Unknown resource "${res}". Run \`mcid-cli access catalog\` to view valid resources.`,
+            ExitCode.Usage,
+          );
+        }
+        if (!isAccessLevel(lvl)) {
+          throw new CliError(
+            `Unknown access level "${lvl}". Expected one of: ${ACCESS_LEVELS.join(', ')}`,
+            ExitCode.Usage,
+          );
+        }
+        newGrants[res] = lvl;
+      }
+
+      // Merge with current grants unless --replace is passed
+      let targetGrants: Record<string, string> = {};
+      if (!options.replace && Object.keys(resolvedRole.grants).length > 0) {
+        targetGrants = { ...resolvedRole.grants };
+      }
+      Object.assign(targetGrants, newGrants);
+
+      // Show diff
+      process.stdout.write(`${colors.bold(`Updating grants for role "${resolvedRole.name}":`)}\n`);
+      for (const [r, l] of Object.entries(newGrants)) {
+        process.stdout.write(`  ${colors.cyan('●')} ${r}: ${l}\n`);
+      }
+
+      if (
+        !(await confirmAction(`Apply grant changes to role "${resolvedRole.name}"?`, options.yes))
+      ) {
+        return;
+      }
+
+      await client.put(`/admin/access/roles/${encodeURIComponent(resolvedRole.id)}`, {
+        grants: targetGrants,
+      });
+
+      printSuccess(`Grants updated for role "${resolvedRole.name}"`);
+    } catch (err) {
+      exitWithError('access role set', err);
+    }
+  };
+  accessRoleSetOptions(roleCmd.command('set <role> <grants...>'))
+    .description('Update admin grants on a role (resource=level pairs)')
+    .action(roleSetAction);
+  accessRoleSetOptions(accessCmd.command('role-set <role> <grants...>'))
+    .description('Shorthand for: access role set')
+    .action(roleSetAction);
+
+  // access member get|set|unset — nested subcommands with hyphen shorthands
+  const memberCmd = accessCmd.command('member').description('Manage member access overrides');
+  const accessMemberGetOptions = (cmd: Command) =>
+    cmd.option('--profile <name>', 'Profile to use').option('--json', 'Output as JSON');
+  const memberGetAction = async (
+    memberArg: string,
+    options: { profile?: string; json?: boolean },
+  ): Promise<void> => {
+    try {
+      const client = await getClient(options.profile);
+      const resolved = await resolveMember(client, memberArg);
+      const res = await client.get<{
+        memberId: string;
+        username?: string;
+        overrides: Record<string, string>;
+      }>(`/admin/access/members/${encodeURIComponent(resolved.discordId)}`);
+
+      if (options.json) {
+        printJson(res);
+        return;
+      }
+
+      printKeyValue({
+        Member: `@${resolved.username} (${resolved.discordId})`,
+        Overrides:
+          Object.keys(res.overrides || {}).length > 0
+            ? Object.entries(res.overrides)
+                .map(([k, v]) => `${k}:${v}`)
+                .join(', ')
+            : colors.dim('none'),
+      });
+    } catch (err) {
+      exitWithError('access member get', err);
+    }
+  };
+
+  accessMemberGetOptions(memberCmd.command('get <member>'))
+    .description('Get member-specific access overrides')
+    .action(memberGetAction);
+  accessMemberGetOptions(accessCmd.command('member-get <member>'))
+    .description('Shorthand for: access member get')
+    .action(memberGetAction);
 
   // access member set <member> <resource=level...>
-  accessCmd
-    .command('member-set <member> <grants...>')
-    .alias('member set')
-    .description('Set member-specific access overrides')
-    .option('--replace', 'Replace all overrides instead of merging')
-    .option('--yes', 'Skip confirmation prompt')
-    .option('--profile <name>', 'Profile to use')
-    .action(
-      async (
-        memberArg: string,
-        grantPairs: string[],
-        options: { replace?: boolean; yes?: boolean; profile?: string },
-      ) => {
-        try {
-          const client = await getClient(options.profile);
-          const resolved = await resolveMember(client, memberArg);
+  const accessMemberSetOptions = (cmd: Command) =>
+    cmd
+      .option('--replace', 'Replace all overrides instead of merging')
+      .option('--yes', 'Skip confirmation prompt')
+      .option('--profile <name>', 'Profile to use');
+  const memberSetAction = async (
+    memberArg: string,
+    grantPairs: string[],
+    options: { replace?: boolean; yes?: boolean; profile?: string },
+  ): Promise<void> => {
+    try {
+      const client = await getClient(options.profile);
+      const resolved = await resolveMember(client, memberArg);
 
-          const newOverrides: Record<string, string> = {};
-          for (const pair of grantPairs) {
-            const [res, lvl] = pair.split('=');
-            if (!res || !lvl) {
-              throw new CliError(
-                `Invalid format "${pair}". Expected format: <resource>=<level>`,
-                ExitCode.Usage,
-              );
-            }
-            if (!isAccessResource(res)) {
-              throw new CliError(
-                `Unknown resource "${res}". Run \`mcid-cli access catalog\``,
-                ExitCode.Usage,
-              );
-            }
-            if (!isAccessLevel(lvl)) {
-              throw new CliError(
-                `Unknown access level "${lvl}". Expected one of: ${ACCESS_LEVELS.join(', ')}`,
-                ExitCode.Usage,
-              );
-            }
-            newOverrides[res] = lvl;
-          }
-
-          let targetOverrides: Record<string, string> = {};
-          if (!options.replace) {
-            const current = await client.get<{ overrides: Record<string, string> }>(
-              `/admin/access/members/${encodeURIComponent(resolved.discordId)}`,
-            );
-            targetOverrides = { ...(current.overrides || {}) };
-          }
-          Object.assign(targetOverrides, newOverrides);
-
-          process.stdout.write(
-            `${colors.bold(`Setting overrides for member @${resolved.username}:`)}\n`,
+      const newOverrides: Record<string, string> = {};
+      for (const pair of grantPairs) {
+        const [res, lvl] = pair.split('=');
+        if (!res || !lvl) {
+          throw new CliError(
+            `Invalid format "${pair}". Expected format: <resource>=<level>`,
+            ExitCode.Usage,
           );
-          for (const [r, l] of Object.entries(newOverrides)) {
-            process.stdout.write(`  ${colors.cyan('●')} ${r}: ${l}\n`);
-          }
-
-          if (
-            !(await confirmAction(`Apply overrides to member @${resolved.username}?`, options.yes))
-          ) {
-            return;
-          }
-
-          await client.put(`/admin/access/members/${encodeURIComponent(resolved.discordId)}`, {
-            grants: targetOverrides,
-          });
-
-          printSuccess(`Overrides updated for member @${resolved.username}`);
-        } catch (err) {
-          exitWithError('access member set', err);
         }
-      },
-    );
+        if (!isAccessResource(res)) {
+          throw new CliError(
+            `Unknown resource "${res}". Run \`mcid-cli access catalog\``,
+            ExitCode.Usage,
+          );
+        }
+        if (!isAccessLevel(lvl)) {
+          throw new CliError(
+            `Unknown access level "${lvl}". Expected one of: ${ACCESS_LEVELS.join(', ')}`,
+            ExitCode.Usage,
+          );
+        }
+        newOverrides[res] = lvl;
+      }
+
+      let targetOverrides: Record<string, string> = {};
+      if (!options.replace) {
+        const current = await client.get<{ overrides: Record<string, string> }>(
+          `/admin/access/members/${encodeURIComponent(resolved.discordId)}`,
+        );
+        targetOverrides = { ...(current.overrides || {}) };
+      }
+      Object.assign(targetOverrides, newOverrides);
+
+      process.stdout.write(
+        `${colors.bold(`Setting overrides for member @${resolved.username}:`)}\n`,
+      );
+      for (const [r, l] of Object.entries(newOverrides)) {
+        process.stdout.write(`  ${colors.cyan('●')} ${r}: ${l}\n`);
+      }
+
+      if (!(await confirmAction(`Apply overrides to member @${resolved.username}?`, options.yes))) {
+        return;
+      }
+
+      await client.put(`/admin/access/members/${encodeURIComponent(resolved.discordId)}`, {
+        grants: targetOverrides,
+      });
+
+      printSuccess(`Overrides updated for member @${resolved.username}`);
+    } catch (err) {
+      exitWithError('access member set', err);
+    }
+  };
+
+  accessMemberSetOptions(memberCmd.command('set <member> <grants...>'))
+    .description('Set member-specific access overrides')
+    .action(memberSetAction);
+  accessMemberSetOptions(accessCmd.command('member-set <member> <grants...>'))
+    .description('Shorthand for: access member set')
+    .action(memberSetAction);
 
   // access member unset <member> <resource>
-  accessCmd
-    .command('member-unset <member> <resource>')
-    .alias('member unset')
+  const accessMemberUnsetOptions = (cmd: Command) =>
+    cmd.option('--yes', 'Skip confirmation prompt').option('--profile <name>', 'Profile to use');
+  const memberUnsetAction = async (
+    memberArg: string,
+    resource: string,
+    options: { yes?: boolean; profile?: string },
+  ): Promise<void> => {
+    try {
+      const client = await getClient(options.profile);
+      const resolved = await resolveMember(client, memberArg);
+
+      if (
+        !(await confirmAction(
+          `Remove override for "${resource}" from member @${resolved.username}?`,
+          options.yes,
+        ))
+      ) {
+        return;
+      }
+
+      await client.delete(
+        `/admin/access/members/${encodeURIComponent(resolved.discordId)}/${encodeURIComponent(resource)}`,
+      );
+
+      printSuccess(`Removed override for "${resource}" from @${resolved.username}`);
+    } catch (err) {
+      exitWithError('access member unset', err);
+    }
+  };
+
+  accessMemberUnsetOptions(memberCmd.command('unset <member> <resource>'))
     .description('Delete a member-specific access override')
-    .option('--yes', 'Skip confirmation prompt')
-    .option('--profile <name>', 'Profile to use')
-    .action(
-      async (memberArg: string, resource: string, options: { yes?: boolean; profile?: string }) => {
-        try {
-          const client = await getClient(options.profile);
-          const resolved = await resolveMember(client, memberArg);
-
-          if (
-            !(await confirmAction(
-              `Remove override for "${resource}" from member @${resolved.username}?`,
-              options.yes,
-            ))
-          ) {
-            return;
-          }
-
-          await client.delete(
-            `/admin/access/members/${encodeURIComponent(resolved.discordId)}/${encodeURIComponent(resource)}`,
-          );
-
-          printSuccess(`Removed override for "${resource}" from @${resolved.username}`);
-        } catch (err) {
-          exitWithError('access member unset', err);
-        }
-      },
-    );
+    .action(memberUnsetAction);
+  accessMemberUnsetOptions(accessCmd.command('member-unset <member> <resource>'))
+    .description('Shorthand for: access member unset')
+    .action(memberUnsetAction);
 
   // access overrides
   accessCmd

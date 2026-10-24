@@ -14,21 +14,22 @@ const adminRole = {
 describe('access nested grammar', () => {
   it('runs role set as two tokens and merges with current grants', async () => {
     let sent: unknown;
-    const result = await runCli(
-      ['access', 'role', 'set', 'Admin', 'webhooks=write', '--yes'],
-      {
-        routes: baseRoutes({
-          'GET /admin/access/roles': () => json([adminRole]),
-          'PUT /admin/access/roles/:roleId': (_url, init) => {
-            sent = JSON.parse(String(init.body));
-            return json(adminRole);
-          },
-        }),
-      },
-    );
+    const result = await runCli(['access', 'role', 'set', 'Admin', 'webhooks=write', '--yes'], {
+      routes: baseRoutes({
+        'GET /admin/access/roles': () => json([adminRole]),
+        'PUT /admin/access/roles/:roleId': (_url, init) => {
+          sent = JSON.parse(String(init.body));
+          return json(adminRole);
+        },
+      }),
+    });
 
     expect(result.exitCode).toBe(0);
-    expect(result.requests.some((r) => r.method === 'PUT' && r.path === '/admin/access/roles/888888888888888888')).toBe(true);
+    expect(
+      result.requests.some(
+        (r) => r.method === 'PUT' && r.path === '/admin/access/roles/888888888888888888',
+      ),
+    ).toBe(true);
     expect(sent).toEqual({ grants: { members: 'read', webhooks: 'write' } });
   });
 
@@ -74,28 +75,27 @@ describe('access nested grammar', () => {
 
     expect(result.exitCode).toBe(0);
     expect(
-      result.requests.some((r) => r.method === 'PUT' && r.path === `/admin/access/members/${MEMBER_ID}`),
+      result.requests.some(
+        (r) => r.method === 'PUT' && r.path === `/admin/access/members/${MEMBER_ID}`,
+      ),
     ).toBe(true);
   });
 
   it('runs member unset as two tokens', async () => {
-    const result = await runCli(
-      ['access', 'member', 'unset', '@john_doe', 'members', '--yes'],
-      {
-        routes: baseRoutes({
-          'GET /admin/members': () =>
-            json({
-              data: [{ memberId: MEMBER_ID, username: 'john_doe' }],
-              total: 1,
-              page: 1,
-              limit: 20,
-              totalPages: 1,
-            }),
-          [`DELETE /admin/access/members/${MEMBER_ID}/members`]: () =>
-            new Response(null, { status: 204 }),
-        }),
-      },
-    );
+    const result = await runCli(['access', 'member', 'unset', '@john_doe', 'members', '--yes'], {
+      routes: baseRoutes({
+        'GET /admin/members': () =>
+          json({
+            data: [{ memberId: MEMBER_ID, username: 'john_doe' }],
+            total: 1,
+            page: 1,
+            limit: 20,
+            totalPages: 1,
+          }),
+        [`DELETE /admin/access/members/${MEMBER_ID}/members`]: () =>
+          new Response(null, { status: 204 }),
+      }),
+    });
 
     expect(result.exitCode).toBe(0);
     expect(
