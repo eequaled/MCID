@@ -30,7 +30,7 @@ describe('project access grant', () => {
     let sent: unknown;
     const result = await runCli(
       ['project', 'access', 'grant', 'Portal', 'Micro Club', '--scope', 'read_members'],
-      { routes: (body) => (sent = body) },
+      { routes: routes((body) => (sent = body)) },
     );
 
     expect(result.exitCode).toBe(0);
@@ -54,7 +54,7 @@ describe('project access grant', () => {
         '--operation',
         'READ',
       ],
-      { routes: (body) => (sent = body) },
+      { routes: routes((body) => (sent = body)) },
     );
 
     expect(result.exitCode).toBe(0);
@@ -97,15 +97,12 @@ describe('project access grant', () => {
 
 describe('project create', () => {
   it('always includes the full API key in --json output (it is shown once, never again)', async () => {
-    const result = await runCli(
-      ['project', 'create', '--name', 'Portal', '--json'],
-      {
-        routes: baseRoutes({
-          'POST /admin/projects': () =>
-            json({ apiKey: 'mcid_live_onceonlykey123', project: projectRecord }, 201),
-        }),
-      },
-    );
+    const result = await runCli(['project', 'create', '--name', 'Portal', '--json'], {
+      routes: baseRoutes({
+        'POST /admin/projects': () =>
+          json({ apiKey: 'mcid_live_onceonlykey123', project: projectRecord }, 201),
+      }),
+    });
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('mcid_live_onceonlykey123');
@@ -116,15 +113,12 @@ describe('project create', () => {
     const tmp = await mkdtemp(join(tmpdir(), 'mcid-create-'));
     const target = join(tmp, '.env');
 
-    const result = await runCli(
-      ['project', 'create', '--name', 'Portal', '--env-file', target],
-      {
-        routes: baseRoutes({
-          'POST /admin/projects': () =>
-            json({ apiKey: 'mcid_live_onceonlykey123', project: projectRecord }, 201),
-        }),
-      },
-    );
+    const result = await runCli(['project', 'create', '--name', 'Portal', '--env-file', target], {
+      routes: baseRoutes({
+        'POST /admin/projects': () =>
+          json({ apiKey: 'mcid_live_onceonlykey123', project: projectRecord }, 201),
+      }),
+    });
 
     expect(result.exitCode).toBe(0);
     const mode = (await stat(target)).mode & 0o777;
@@ -135,29 +129,20 @@ describe('project create', () => {
     const tmp = await mkdtemp(join(tmpdir(), 'mcid-create-'));
     const target = join(tmp, '.env');
 
-    const result = await runCli(
-      ['project', 'create', '--name', 'Portal', '--env-file', target],
-      {
-        routes: baseRoutes({
-          'POST /admin/projects': () =>
-            json(
-              { apiKey: 'mcid_live_secondkey456', project: projectRecord },
-              201,
-            ),
-        }),
-      },
-    );
+    const result = await runCli(['project', 'create', '--name', 'Portal', '--env-file', target], {
+      routes: baseRoutes({
+        'POST /admin/projects': () =>
+          json({ apiKey: 'mcid_live_secondkey456', project: projectRecord }, 201),
+      }),
+    });
 
     // Second create into the same file: the guard must reject before overwrite.
-    const second = await runCli(
-      ['project', 'create', '--name', 'Portal', '--env-file', target],
-      {
-        routes: baseRoutes({
-          'POST /admin/projects': () =>
-            json({ apiKey: 'mcid_live_secondkey456', project: projectRecord }, 201),
-        }),
-      },
-    );
+    const second = await runCli(['project', 'create', '--name', 'Portal', '--env-file', target], {
+      routes: baseRoutes({
+        'POST /admin/projects': () =>
+          json({ apiKey: 'mcid_live_secondkey456', project: projectRecord }, 201),
+      }),
+    });
 
     expect(result.exitCode).toBe(0);
     expect(second.exitCode).not.toBe(0);

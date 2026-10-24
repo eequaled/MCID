@@ -25,6 +25,7 @@ import {
 } from '../lib/output.js';
 import { promptInput } from '../lib/prompts.js';
 import { resolveProject, resolveServer } from '../lib/resolver.js';
+import { PROJECT_OPERATIONS, PROJECT_SCOPES } from '@mcid/contracts';
 import { colors } from '../lib/tui.js';
 import { resolveSession } from '../session.js';
 
@@ -234,7 +235,9 @@ export function registerProjectCommand(program: Command): void {
           }
 
           if (options.json) {
-            printJson(res, options.reveal);
+            // The key is unrecoverable after this; masking it here would lose
+            // the only copy, so --json always includes it in full.
+            printJson(res, true);
             return;
           }
 
@@ -285,7 +288,7 @@ export function registerProjectCommand(program: Command): void {
               : existing
                 ? `${existing.trimEnd()}\n\n${envBlock}\n`
                 : `${envBlock}\n`;
-            await writeFile(options.envFile, newContent, 'utf8');
+            await writeFile(options.envFile, newContent, { encoding: 'utf8', mode: 0o600 });
             printSuccess(`Saved environment configuration to ${options.envFile}`);
           } else {
             process.stdout.write(`${colors.dim('.env configuration block:')}\n`);
@@ -602,16 +605,46 @@ export function registerProjectCommand(program: Command): void {
           const resolvedProject = await resolveProject(client, projectIdOrName);
           const resolvedServer = await resolveServer(client, serverIdOrName);
 
-          const opsObj: Record<string, boolean> = {};
-          if (options.operation) {
-            for (const op of options.operation) {
-              opsObj[op.toUpperCase()] = true;
+          // Validate against the shared contract before any request.
+          for (const scope of options.scope) {
+            if (!(PROJECT_SCOPES as readonly string[]).includes(scope)) {
+              throw new CliError(
+                `Unknown scope "${scope}". Expected one of: ${PROJECT_SCOPES.join(', ')}`,
+                ExitCode.Usage,
+              );
             }
+          }
+          const requestedOps = (options.operation ?? []).map((op) => op.toUpperCase());
+          for (const op of requestedOps) {
+            if (!(PROJECT_OPERATIONS as readonly string[]).includes(op)) {
+              throw new CliError(
+                `Unknown operation "${op}". Expected one of: ${PROJECT_OPERATIONS.join(', ')}`,
+                ExitCode.Usage,
+              );
+            }
+          }
+
+          // The PUT replaces the grant and fills omitted operations with
+          // defaults server-side: read the current grant first so omitting
+          // --operation keeps what is already there.
+          let operations: Record<string, boolean> | undefined;
+          if (requestedOps.length === 0) {
+            const grants = await client.get<
+              { serverId: string; operations?: Record<string, boolean> }[]
+            >(`/admin/projects/${resolvedProject.id}/servers`);
+            const existing = grants.find((g) => g.serverId === resolvedServer.id);
+            operations = existing?.operations;
+          } else {
+            // Explicit list = intentional replace, with every operation named
+            // so turning one off (e.g. READ) is expressible.
+            operations = Object.fromEntries(
+              PROJECT_OPERATIONS.map((op) => [op, requestedOps.includes(op)]),
+            );
           }
 
           await client.put(`/admin/projects/${resolvedProject.id}/servers/${resolvedServer.id}`, {
             scopes: options.scope,
-            operations: Object.keys(opsObj).length > 0 ? opsObj : undefined,
+            ...(operations !== undefined ? { operations } : {}),
           });
 
           printSuccess(
