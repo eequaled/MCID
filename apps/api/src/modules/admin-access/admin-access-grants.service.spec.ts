@@ -136,7 +136,7 @@ describe('AdminAccessGrantsService', () => {
       expect(cache.invalidateAllAdminAccess).toHaveBeenCalled();
       expect(audit.logAction).toHaveBeenCalledWith({
         actorId: 'actor-1',
-        actionType: 'permission',
+        actionType: 'access',
         action: 'role_grants_updated',
         entityType: 'role',
         entityId: 'role-hr',
